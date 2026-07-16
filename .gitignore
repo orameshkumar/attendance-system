@@ -1,0 +1,20 @@
+# Firebase admin key — NEVER commit
+backend/serviceAccountKey.json
+backend/.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+backend/snapshots_temp/
+
+# Node
+node_modules/
+dashboard/dist/
+dashboard/.env
+
+# OS
+.DS_Store
+Thumbs.db
