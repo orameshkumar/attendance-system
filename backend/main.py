@@ -2,7 +2,7 @@ import os
 import time
 import cv2
 import firebase_admin
-from firebase_admin import credentials
+from firebase_admin import credentials, storage
 from dotenv import load_dotenv
 
 import face_engine as fe
@@ -38,6 +38,17 @@ REFRESH_INTERVAL = 300  # seconds
 last_seen = {}
 DEBOUNCE_SECONDS = 30
 
+LIVE_FRAME_INTERVAL = 5   # upload live frame every 5 seconds
+last_live_upload = 0
+
+def upload_live_frame(frame):
+    small = cv2.resize(frame, (320, 180))
+    tmp = "snapshots_temp/live_current.jpg"
+    cv2.imwrite(tmp, small, [cv2.IMWRITE_JPEG_QUALITY, 60])
+    blob = storage.bucket().blob("live/current.jpg")
+    blob.upload_from_filename(tmp, content_type="image/jpeg")
+    blob.make_public()
+
 
 def refresh_employees():
     global employees, last_refresh
@@ -60,6 +71,15 @@ while True:
     # Refresh employee list periodically
     if time.time() - last_refresh > REFRESH_INTERVAL:
         refresh_employees()
+
+    # Upload live preview frame every 5 seconds
+    global last_live_upload
+    if time.time() - last_live_upload >= LIVE_FRAME_INTERVAL:
+        try:
+            upload_live_frame(frame)
+            last_live_upload = time.time()
+        except Exception as e:
+            print(f"[WARN] Live frame upload failed: {e}")
 
     faces = fe.detect_faces(frame)
 

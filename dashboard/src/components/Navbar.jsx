@@ -4,6 +4,7 @@ const links = [
   { path: "/",          icon: "📋", label: "Attendance" },
   { path: "/employees", icon: "👤", label: "Employees"  },
   { path: "/reports",   icon: "📊", label: "Reports"    },
+  { path: "/live",      icon: "📷", label: "Live View"  },
 ];
 
 export default function Navbar() {

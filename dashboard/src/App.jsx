@@ -3,6 +3,7 @@ import Navbar from "./components/Navbar";
 import Attendance from "./pages/Attendance";
 import Employees from "./pages/Employees";
 import Reports from "./pages/Reports";
+import LiveView from "./pages/LiveView";
 import "./index.css";
 
 export default function App() {
@@ -15,6 +16,7 @@ export default function App() {
             <Route path="/"          element={<Attendance />} />
             <Route path="/employees" element={<Employees />} />
             <Route path="/reports"   element={<Reports />} />
+            <Route path="/live"      element={<LiveView />} />
           </Routes>
         </main>
       </div>
