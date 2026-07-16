@@ -2,7 +2,7 @@ import os
 import time
 import cv2
 import firebase_admin
-from firebase_admin import credentials, storage
+from firebase_admin import credentials
 from dotenv import load_dotenv
 
 import face_engine as fe
@@ -43,11 +43,14 @@ last_live_upload = 0
 
 def upload_live_frame(frame):
     small = cv2.resize(frame, (320, 180))
-    tmp = "snapshots_temp/live_current.jpg"
-    cv2.imwrite(tmp, small, [cv2.IMWRITE_JPEG_QUALITY, 60])
-    blob = storage.bucket().blob("live/current.jpg")
-    blob.upload_from_filename(tmp, content_type="image/jpeg")
-    blob.make_public()
+    _, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 40])
+    import base64
+    b64 = base64.b64encode(buf).decode("utf-8")
+    from firebase_admin import firestore as _fs
+    _fs.client().collection("live").document("current").set({
+        "frame": b64,
+        "ts": _fs.SERVER_TIMESTAMP,
+    })
 
 
 def refresh_employees():
