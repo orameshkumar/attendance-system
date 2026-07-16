@@ -73,7 +73,6 @@ while True:
         refresh_employees()
 
     # Upload live preview frame every 5 seconds
-    global last_live_upload
     if time.time() - last_live_upload >= LIVE_FRAME_INTERVAL:
         try:
             upload_live_frame(frame)
