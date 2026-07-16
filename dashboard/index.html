@@ -6,6 +6,20 @@
     <title>Attendance System</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <script>
+      // Restore path encoded by 404.html redirect
+      (function() {
+        var p = window.location.search.match(/[?&]p=([^&]*)/);
+        if (p) {
+          var path = decodeURIComponent(p[1]);
+          window.history.replaceState(null, null,
+            '/attendance-system' + (path || '/') +
+            window.location.search.replace(/[?&]p=[^&]*/, '').replace(/^&/, '?') +
+            window.location.hash
+          );
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
