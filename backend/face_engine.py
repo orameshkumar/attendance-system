@@ -1,25 +1,26 @@
 import cv2
 import numpy as np
 import os
-import tempfile
 from deepface import DeepFace
-from mtcnn import MTCNN
 
-detector = MTCNN()
+# Use OpenCV Haar cascade — no TensorFlow dependency for detection
+_cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+_face_cascade = cv2.CascadeClassifier(_cascade_path)
+
 SNAPSHOT_DIR = "snapshots_temp"
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 
 
 def detect_faces(frame):
-    """Return list of cropped face images and their bounding boxes."""
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = detector.detect_faces(rgb)
+    """Return list of (cropped_face, bbox) tuples."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    detections = _face_cascade.detectMultiScale(
+        gray, scaleFactor=1.1, minNeighbors=5, minSize=(80, 80)
+    )
     faces = []
-    for r in results:
-        if r["confidence"] < 0.95:
-            continue
-        x, y, w, h = r["box"]
-        x, y = max(0, x), max(0, y)
+    if len(detections) == 0:
+        return faces
+    for (x, y, w, h) in detections:
         face_crop = frame[y:y+h, x:x+w]
         if face_crop.size == 0:
             continue
@@ -56,7 +57,6 @@ def match_face(embedding, employees: dict, threshold: float = 0.60):
     """
     best_id = None
     best_score = 0.0
-
     for emp_id, data in employees.items():
         enc = data["encoding"]
         if len(enc) == 0:
@@ -65,14 +65,12 @@ def match_face(embedding, employees: dict, threshold: float = 0.60):
         if score > best_score:
             best_score = score
             best_id = emp_id
-
     if best_score >= threshold:
         return best_id, best_score
     return None, best_score
 
 
 def save_face_temp(face_img, prefix="face") -> str:
-    """Save face image to a temp file and return the path."""
     path = os.path.join(SNAPSHOT_DIR, f"{prefix}_temp.jpg")
     cv2.imwrite(path, face_img)
     return path

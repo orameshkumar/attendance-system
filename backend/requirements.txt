@@ -1,9 +1,8 @@
-opencv-python==4.9.0.80
-deepface==0.0.93
-mtcnn==0.1.1
-numpy==1.26.4
-firebase-admin==6.5.0
-Pillow==10.3.0
-schedule==1.2.2
-python-dotenv==1.0.1
-tf-keras==2.16.0
+opencv-python
+deepface
+numpy
+firebase-admin
+Pillow
+schedule
+python-dotenv
+tf-keras
