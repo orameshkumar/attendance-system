@@ -97,10 +97,30 @@ def record_attendance(emp_id, snapshot_url):
         })
         return "created"
 
-    # Find the record with the latest out_time in Python (no index required)
-    latest = max(docs, key=lambda d: d.to_dict().get("out_time", ""))
+    # Find the record with the latest out_time (handle missing/empty gracefully)
+    latest      = max(docs, key=lambda d: d.to_dict().get("out_time") or "")
     latest_data = latest.to_dict()
-    last_out = datetime.fromisoformat(latest_data["out_time"])
+    last_out_str = latest_data.get("out_time") or ""
+    last_in_str  = latest_data.get("in_time")  or ""
+
+    # Old record has no times at all — fill both in now
+    if not last_out_str and not last_in_str:
+        latest.reference.update({
+            "in_time":    now.isoformat(),
+            "out_time":   now.isoformat(),
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        })
+        return "backfilled"
+
+    # Has in_time but no out_time — set out_time now
+    if not last_out_str:
+        latest.reference.update({
+            "out_time":   now.isoformat(),
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        })
+        return "out_time_set"
+
+    last_out    = datetime.fromisoformat(last_out_str)
     gap_seconds = (now - last_out).total_seconds()
 
     if gap_seconds > GAP_MINUTES * 60:
@@ -115,11 +135,14 @@ def record_attendance(emp_id, snapshot_url):
         })
         return "new_session"
     else:
-        # Rule 3 — within 30 min → update out_time
-        latest.reference.update({
+        # Rule 3 — within gap → extend out_time; also fix in_time if missing
+        update = {
             "out_time":   now.isoformat(),
             "updated_at": firestore.SERVER_TIMESTAMP,
-        })
+        }
+        if not last_in_str:
+            update["in_time"] = now.isoformat()
+        latest.reference.update(update)
         return "updated"
 
 
