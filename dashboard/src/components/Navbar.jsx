@@ -4,30 +4,51 @@ const links = [
   { path: "/",          icon: "📋", label: "Attendance" },
   { path: "/employees", icon: "👤", label: "Employees"  },
   { path: "/reports",   icon: "📊", label: "Reports"    },
-  { path: "/live",      icon: "📷", label: "Live View"  },
+  { path: "/live",      icon: "📷", label: "Live"       },
 ];
 
 export default function Navbar() {
   const location = useLocation();
   const navigate = useNavigate();
 
+  const isActive = (path) => location.pathname === path;
+
   return (
-    <aside className="sidebar">
-      <div className="sidebar-logo">
-        Attend<span>AI</span>
-      </div>
-      <nav>
-        {links.map((l) => (
-          <div
-            key={l.path}
-            className={`nav-link ${location.pathname === l.path ? "active" : ""}`}
-            onClick={() => navigate(l.path)}
-          >
-            <span className="icon">{l.icon}</span>
-            <span>{l.label}</span>
-          </div>
-        ))}
+    <>
+      {/* Desktop sidebar */}
+      <aside className="sidebar">
+        <div className="sidebar-logo">
+          Attend<span>AI</span>
+        </div>
+        <nav>
+          {links.map((l) => (
+            <div
+              key={l.path}
+              className={`nav-link ${isActive(l.path) ? "active" : ""}`}
+              onClick={() => navigate(l.path)}
+            >
+              <span className="icon">{l.icon}</span>
+              <span>{l.label}</span>
+            </div>
+          ))}
+        </nav>
+      </aside>
+
+      {/* Mobile bottom nav */}
+      <nav className="bottom-nav">
+        <div className="bottom-nav-inner">
+          {links.map((l) => (
+            <div
+              key={l.path}
+              className={`bottom-nav-item ${isActive(l.path) ? "active" : ""}`}
+              onClick={() => navigate(l.path)}
+            >
+              <span className="icon">{l.icon}</span>
+              <span>{l.label}</span>
+            </div>
+          ))}
+        </div>
       </nav>
-    </aside>
+    </>
   );
 }
