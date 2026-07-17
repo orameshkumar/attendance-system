@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import {
-  collection, getDocs, doc, updateDoc, deleteDoc, arrayUnion, query, where,
+  collection, getDocs, doc, updateDoc, deleteDoc, arrayUnion, query, where, writeBatch,
 } from "firebase/firestore";
 import { db } from "../firebase";
 
@@ -82,11 +82,26 @@ export default function Employees() {
   }
 
   async function mergeUnknownIntoEmployee(unknownId, targetId, captureFrames) {
+    // 1. Add capture frames as training photos on target
     const mergeFields = { needs_retraining: true };
     if (captureFrames?.length) {
       mergeFields.training_photos = arrayUnion(...captureFrames);
     }
     await updateDoc(doc(db, "employees", targetId), mergeFields);
+
+    // 2. Re-assign all attendance records from unknown → target employee
+    //    Frontend groups by emp_id+date and already picks earliest in_time
+    //    and latest out_time, so start/end times merge automatically
+    const attSnap = await getDocs(
+      query(collection(db, "attendance"), where("emp_id", "==", unknownId))
+    );
+    if (attSnap.docs.length > 0) {
+      const batch = writeBatch(db);
+      attSnap.docs.forEach((d) => batch.update(d.ref, { emp_id: targetId }));
+      await batch.commit();
+    }
+
+    // 3. Delete the unknown employee record
     await deleteDoc(doc(db, "employees", unknownId));
     setModal(null);
     load();
