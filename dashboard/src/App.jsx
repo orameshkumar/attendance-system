@@ -4,6 +4,7 @@ import Attendance from "./pages/Attendance";
 import Employees from "./pages/Employees";
 import Reports from "./pages/Reports";
 import LiveView from "./pages/LiveView";
+import Settings from "./pages/Settings";
 import "./index.css";
 
 export default function App() {
@@ -17,6 +18,7 @@ export default function App() {
             <Route path="/employees" element={<Employees />} />
             <Route path="/reports"   element={<Reports />} />
             <Route path="/live"      element={<LiveView />} />
+            <Route path="/settings"  element={<Settings />} />
           </Routes>
         </main>
       </div>

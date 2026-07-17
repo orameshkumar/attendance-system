@@ -77,13 +77,11 @@ def record_attendance(emp_id, snapshot_url):
     now   = datetime.now()
     db    = _db()
 
-    # Get only the latest record for today (ordered by out_time desc, limit 1)
+    # Get all records for today (simple two-field query, no composite index needed)
     docs = list(
         db.collection("attendance")
         .where("emp_id", "==", emp_id)
         .where("date", "==", today)
-        .order_by("out_time", direction=firestore.Query.DESCENDING)
-        .limit(1)
         .stream()
     )
 
@@ -99,8 +97,8 @@ def record_attendance(emp_id, snapshot_url):
         })
         return "created"
 
-    # This is already the latest record
-    latest = docs[0]
+    # Find the record with the latest out_time in Python (no index required)
+    latest = max(docs, key=lambda d: d.to_dict().get("out_time", ""))
     latest_data = latest.to_dict()
     last_out = datetime.fromisoformat(latest_data["out_time"])
     gap_seconds = (now - last_out).total_seconds()
@@ -163,6 +161,49 @@ def save_retrained_encoding(emp_id: str, encoding, appearance=None):
     if appearance is not None:
         update["body_appearance"] = appearance.tolist()
     _db().collection("employees").document(emp_id).update(update)
+
+
+def load_config():
+    """
+    Load runtime config from Firestore settings/config.
+    Returns a dict with all keys; falls back to env-var defaults if document missing.
+    """
+    snap = _db().collection("settings").document("config").get()
+    if snap.exists:
+        data = snap.to_dict()
+    else:
+        data = {}
+
+    return {
+        "cameras":           data.get("cameras",          []),
+        "frame_interval":    int(data.get("frame_interval",   os.getenv("FRAME_INTERVAL_SECONDS", 3))),
+        "face_threshold":    float(data.get("face_threshold",  os.getenv("MATCH_THRESHOLD", 0.60))),
+        "appear_threshold":  float(data.get("appear_threshold", os.getenv("APPEAR_THRESHOLD", 0.75))),
+        "debounce_seconds":  int(data.get("debounce_seconds",  30)),
+        "capture_frames":    int(data.get("capture_frames",    10)),
+        "gap_minutes":       int(data.get("gap_minutes",       GAP_MINUTES)),
+        "retention_days":    int(data.get("retention_days",    RETENTION_DAYS)),
+    }
+
+
+def save_default_config(rtsp_url):
+    """Write initial config to Firestore from env vars (first-run only)."""
+    ref = _db().collection("settings").document("config")
+    if ref.get().exists:
+        return
+    ref.set({
+        "cameras": [
+            {"id": "cam1", "name": "Main Camera", "url": rtsp_url, "enabled": True}
+        ],
+        "frame_interval":   int(os.getenv("FRAME_INTERVAL_SECONDS", 3)),
+        "face_threshold":   float(os.getenv("MATCH_THRESHOLD", 0.60)),
+        "appear_threshold": float(os.getenv("APPEAR_THRESHOLD", 0.75)),
+        "debounce_seconds": 30,
+        "capture_frames":   10,
+        "gap_minutes":      GAP_MINUTES,
+        "retention_days":   RETENTION_DAYS,
+    })
+    print("[CONFIG] Initial settings written to Firestore.")
 
 
 def cleanup_old_records():

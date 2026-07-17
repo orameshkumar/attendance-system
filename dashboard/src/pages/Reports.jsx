@@ -133,9 +133,7 @@ export default function Reports() {
                       <td>{r.date}</td>
                       <td>
                         <div className="emp-cell">
-                          {emp.face_snapshot_url
-                            ? <img className="avatar" src={emp.face_snapshot_url} alt="" />
-                            : <div className="avatar" style={{ background: "#e2e8f0" }} />}
+                          {(() => { const f=emp.capture_frames, t=emp.training_photos; const s=(f?.length?f[f.length-1]:null)||(t?.length?t[t.length-1]:null)||emp.detection_frame; return s ? <img className="avatar" src={`data:image/jpeg;base64,${s}`} alt="" /> : <div className="avatar" style={{background:"#e2e8f0"}} />; })()}
                           <span>{emp.name || r.emp_id}</span>
                         </div>
                       </td>

@@ -1,20 +1,23 @@
 import { useEffect, useState } from "react";
-import { collection, query, where, getDocs, orderBy } from "firebase/firestore";
+import {
+  collection, query, where, getDocs,
+  deleteDoc, doc,
+} from "firebase/firestore";
 import { db } from "../firebase";
 
 export default function Attendance() {
-  const [records, setRecords] = useState([]);
-  const [employees, setEmployees] = useState({});
+  const [records,      setRecords]      = useState([]);
+  const [employees,    setEmployees]    = useState({});
   const [selectedDate, setSelectedDate] = useState(today());
-  const [loading, setLoading] = useState(true);
+  const [loading,      setLoading]      = useState(true);
+  const [selected,     setSelected]     = useState(new Set()); // record IDs chosen for bulk delete
+  const [deleting,     setDeleting]     = useState(false);
 
   function today() {
     return new Date().toISOString().slice(0, 10);
   }
 
-  useEffect(() => {
-    loadEmployees();
-  }, []);
+  useEffect(() => { loadEmployees(); }, []);
 
   useEffect(() => {
     if (Object.keys(employees).length > 0) loadAttendance();
@@ -29,15 +32,38 @@ export default function Attendance() {
 
   async function loadAttendance() {
     setLoading(true);
-    const q = query(
-      collection(db, "attendance"),
-      where("date", "==", selectedDate)
-    );
+    setSelected(new Set());
+    const q = query(collection(db, "attendance"), where("date", "==", selectedDate));
     const snap = await getDocs(q);
     const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     rows.sort((a, b) => (a.in_time > b.in_time ? 1 : -1));
     setRecords(rows);
     setLoading(false);
+  }
+
+  function toggleOne(id) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    if (selected.size === records.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(records.map((r) => r.id)));
+    }
+  }
+
+  async function handleDelete(ids) {
+    if (!window.confirm(`Delete ${ids.size ?? ids.length} record(s)? This cannot be undone.`)) return;
+    setDeleting(true);
+    const idsArr = ids instanceof Set ? [...ids] : ids;
+    await Promise.all(idsArr.map((id) => deleteDoc(doc(db, "attendance", id))));
+    setDeleting(false);
+    loadAttendance();
   }
 
   const present  = records.filter((r) => !employees[r.emp_id]?.is_unknown).length;
@@ -55,6 +81,21 @@ export default function Attendance() {
     const m = Math.floor((diff % 3600000) / 60000);
     return `${h}h ${m}m`;
   }
+
+  function latestPhoto(emp) {
+    const f = emp.capture_frames; if (f?.length) return f[f.length - 1];
+    const t = emp.training_photos; if (t?.length) return t[t.length - 1];
+    return emp.detection_frame || null;
+  }
+
+  function empAvatar(emp) {
+    const src = latestPhoto(emp);
+    return src
+      ? <img className="avatar" src={`data:image/jpeg;base64,${src}`} alt="" />
+      : <div className="avatar" style={{ background: "#e2e8f0" }} />;
+  }
+
+  const allSelected = records.length > 0 && selected.size === records.length;
 
   return (
     <div>
@@ -86,6 +127,16 @@ export default function Attendance() {
             value={selectedDate}
             onChange={(e) => setSelectedDate(e.target.value)}
           />
+          {selected.size > 0 && (
+            <button
+              className="btn btn-sm"
+              style={{ background: "#dc2626", color: "#fff" }}
+              onClick={() => handleDelete(selected)}
+              disabled={deleting}
+            >
+              {deleting ? "Deleting…" : `Delete ${selected.size} selected`}
+            </button>
+          )}
         </div>
 
         {loading ? (
@@ -97,11 +148,20 @@ export default function Attendance() {
             <table>
               <thead>
                 <tr>
+                  <th style={{ width: 36 }}>
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      onChange={toggleAll}
+                      style={{ cursor: "pointer" }}
+                    />
+                  </th>
                   <th>Employee</th>
                   <th>Status</th>
-                  <th>First In</th>
-                  <th>Last Out</th>
+                  <th>Start Time</th>
+                  <th>End Time</th>
                   <th>Duration</th>
+                  <th style={{ width: 60 }}></th>
                 </tr>
               </thead>
               <tbody>
@@ -109,14 +169,18 @@ export default function Attendance() {
                   const emp = employees[r.emp_id] || {};
                   const isUnknown = emp.is_unknown;
                   return (
-                    <tr key={r.id}>
+                    <tr key={r.id} style={{ background: selected.has(r.id) ? "#eff6ff" : undefined }}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={selected.has(r.id)}
+                          onChange={() => toggleOne(r.id)}
+                          style={{ cursor: "pointer" }}
+                        />
+                      </td>
                       <td>
                         <div className="emp-cell">
-                          {emp.face_snapshot_url ? (
-                            <img className="avatar" src={emp.face_snapshot_url} alt="" />
-                          ) : (
-                            <div className="avatar" style={{ background: "#e2e8f0" }} />
-                          )}
+                          {empAvatar(emp)}
                           <span>{emp.name || r.emp_id}</span>
                         </div>
                       </td>
@@ -128,6 +192,16 @@ export default function Attendance() {
                       <td>{fmt(r.in_time)}</td>
                       <td>{fmt(r.out_time)}</td>
                       <td>{duration(r.in_time, r.out_time)}</td>
+                      <td>
+                        <button
+                          className="btn btn-sm btn-outline"
+                          style={{ color: "#dc2626", borderColor: "#fca5a5" }}
+                          onClick={() => handleDelete([r.id])}
+                          title="Delete this record"
+                        >
+                          ✕
+                        </button>
+                      </td>
                     </tr>
                   );
                 })}

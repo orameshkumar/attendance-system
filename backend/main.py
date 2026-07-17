@@ -11,22 +11,39 @@ import firebase_service as fs
 
 load_dotenv()
 
-RTSP_URL          = os.getenv("RTSP_URL", "rtsp://orameshkumar:orameshkumar@192.168.1.19:554/stream1")
 SERVICE_ACCOUNT_KEY = os.getenv("SERVICE_ACCOUNT_KEY", "serviceAccountKey.json")
-FRAME_INTERVAL    = int(os.getenv("FRAME_INTERVAL_SECONDS", 3))
-FACE_THRESHOLD    = float(os.getenv("MATCH_THRESHOLD", 0.60))
-APPEAR_THRESHOLD  = float(os.getenv("APPEAR_THRESHOLD", 0.75))
+RTSP_URL_ENV        = os.getenv("RTSP_URL", "rtsp://orameshkumar:orameshkumar@192.168.1.19:554/stream1")
 
 # Initialize Firebase
 cred = credentials.Certificate(SERVICE_ACCOUNT_KEY)
 firebase_admin.initialize_app(cred)
-
 print("Firebase connected.")
-print(f"Connecting to stream: {RTSP_URL}")
 
-cap = cv2.VideoCapture(RTSP_URL)
+# Write default config to Firestore on first run (uses env-var RTSP_URL as seed)
+fs.save_default_config(RTSP_URL_ENV)
+
+# ── Load config from Firestore ──────────────────────────────────
+cfg              = fs.load_config()
+FRAME_INTERVAL   = cfg["frame_interval"]
+FACE_THRESHOLD   = cfg["face_threshold"]
+APPEAR_THRESHOLD = cfg["appear_threshold"]
+DEBOUNCE_SECONDS = cfg["debounce_seconds"]
+CAPTURE_FRAMES   = cfg["capture_frames"]
+
+def active_camera_url():
+    """Return URL of first enabled camera, or env-var fallback."""
+    for cam in cfg.get("cameras", []):
+        if cam.get("enabled") and cam.get("url"):
+            url = cam["url"].strip()
+            # Allow "0", "1" etc. as local webcam indexes
+            return int(url) if url.isdigit() else url
+    return RTSP_URL_ENV
+
+current_cam_url = active_camera_url()
+print(f"Connecting to stream: {current_cam_url}")
+cap = cv2.VideoCapture(current_cam_url)
 if not cap.isOpened():
-    raise RuntimeError("Cannot connect to RTSP stream. Check URL and network.")
+    raise RuntimeError("Cannot connect to camera. Check URL/network in Settings.")
 
 print("Stream connected. Starting attendance loop...\n")
 
@@ -35,16 +52,39 @@ last_refresh     = 0
 last_live_upload = 0
 last_cleanup     = 0
 last_retrain     = 0
+last_config_check = 0
 last_seen        = {}   # emp_id → timestamp, debounce duplicate records
 capture_targets  = {}   # emp_id → last_capture_ts, employees awaiting frame capture
-CAPTURE_FRAMES   = 10   # how many frames to collect per employee
 
-REFRESH_INTERVAL  = 300    # reload employee cache every 5 min
-LIVE_INTERVAL     = 5      # upload live preview frame every 5 sec
-CLEANUP_INTERVAL  = 3600   # delete old attendance records every 1 hour
-RETRAIN_INTERVAL  = 60     # check retraining queue every 60 sec
-DEBOUNCE_SECONDS  = 30     # ignore same person within 30 sec
-CAPTURE_GAP       = 2      # seconds between capture frames for same person
+REFRESH_INTERVAL      = 300    # reload employee cache every 5 min
+LIVE_INTERVAL         = 5      # upload live preview frame every 5 sec
+CLEANUP_INTERVAL      = 3600   # delete old attendance records every 1 hour
+RETRAIN_INTERVAL      = 60     # check retraining queue every 60 sec
+CONFIG_CHECK_INTERVAL = 30     # re-read Firestore config every 30 sec
+
+
+def apply_config(new_cfg):
+    """Apply a freshly loaded config dict to global runtime vars."""
+    global cfg, FRAME_INTERVAL, FACE_THRESHOLD, APPEAR_THRESHOLD
+    global DEBOUNCE_SECONDS, CAPTURE_FRAMES, cap, current_cam_url
+
+    cfg              = new_cfg
+    FRAME_INTERVAL   = cfg["frame_interval"]
+    FACE_THRESHOLD   = cfg["face_threshold"]
+    APPEAR_THRESHOLD = cfg["appear_threshold"]
+    DEBOUNCE_SECONDS = cfg["debounce_seconds"]
+    CAPTURE_FRAMES   = cfg["capture_frames"]
+
+    new_url = active_camera_url()
+    if new_url != current_cam_url:
+        print(f"[CONFIG] Camera URL changed → {new_url}. Reconnecting…")
+        cap.release()
+        cap = cv2.VideoCapture(new_url)
+        current_cam_url = new_url
+        if not cap.isOpened():
+            print(f"[WARN] Cannot open new camera URL: {new_url}")
+        else:
+            print(f"[CONFIG] Reconnected to {new_url}")
 
 
 def upload_live_frame(frame):
@@ -65,7 +105,6 @@ def refresh_employees():
 
 
 def refresh_capture_targets():
-    """Reload which employees are waiting for frame capture."""
     global capture_targets
     pending = fs.get_employees_needing_capture()
     capture_targets = {emp_id: capture_targets.get(emp_id, 0) for emp_id, _ in pending}
@@ -75,7 +114,6 @@ def refresh_capture_targets():
 
 
 def save_capture_frame(emp_id: str, person_crop):
-    """Resize person crop to 200×200 and store as base64 in Firestore."""
     resized = cv2.resize(person_crop, (200, 200))
     _, buf = cv2.imencode(".jpg", resized, [cv2.IMWRITE_JPEG_QUALITY, 80])
     b64 = __import__("base64").b64encode(buf).decode("utf-8")
@@ -84,13 +122,6 @@ def save_capture_frame(emp_id: str, person_crop):
 
 
 def run_retraining():
-    """
-    Process employees with new training photos.
-    For each photo:
-      - Extract the face sub-region (if visible) → ArcFace embedding
-      - Use the full person crop → body appearance histogram
-    Average all valid embeddings and save back to Firestore.
-    """
     global employees
     pending = fs.get_employees_needing_retraining()
     if not pending:
@@ -126,7 +157,6 @@ def run_retraining():
 
 
 def _annotated_frame_b64(frame, bbox, label="Motion detected"):
-    """Draw bbox on a copy of the frame, resize to 320×180, return base64 JPEG."""
     x, y, w, h = bbox
     vis = frame.copy()
     cv2.rectangle(vis, (x, y), (x + w, y + h), (0, 255, 0), 3)
@@ -138,25 +168,17 @@ def _annotated_frame_b64(frame, bbox, label="Motion detected"):
 
 
 def _process_candidate(person_crop, bbox, source, now, frame=None):
-    """
-    Process one detected person (from YOLO or motion fallback).
-    Each step is logged so failures are visible immediately.
-    Wrapped in try/except in the caller so one failure never stops the loop.
-    """
     x, y, w, h = bbox
 
-    # Step 1 — face embedding (may be None for top-angle / no face visible)
     face_emb = fe.get_face_embedding(person_crop)
     print(f"[DETECT]  source={source} bbox=({x},{y},{w}×{h}) "
           f"face={'yes' if face_emb is not None else 'no'}")
 
-    # Step 2 — body appearance histogram (always computed)
     appearance = fe.get_body_appearance(person_crop)
     if appearance is None:
         print(f"[DETECT]  appearance extraction failed — crop too small?  size={person_crop.shape}")
         return
 
-    # Step 3 — match against known employees
     emp_id, score, method = fe.match_person(
         face_emb, appearance, employees,
         face_thresh=FACE_THRESHOLD,
@@ -166,10 +188,9 @@ def _process_candidate(person_crop, bbox, source, now, frame=None):
           f"method={method} score={score:.3f}")
 
     if emp_id:
-        # ── Frame capture for newly converted employees ──────────────────
         if emp_id in capture_targets:
             last_cap = capture_targets.get(emp_id, 0)
-            if now - last_cap >= CAPTURE_GAP:
+            if now - last_cap >= 2:
                 try:
                     done = save_capture_frame(emp_id, person_crop)
                     capture_targets[emp_id] = now
@@ -181,12 +202,11 @@ def _process_candidate(person_crop, bbox, source, now, frame=None):
                 except Exception as e:
                     print(f"[WARN] Capture frame failed for {emp_id}: {e}")
 
-        # Known employee — debounce
         if last_seen.get(emp_id, 0) > now - DEBOUNCE_SECONDS:
             print(f"[DETECT]  skipped (debounce) — {emp_id}")
             return
 
-        last_seen[emp_id] = now   # set before Firestore so failure doesn't cause duplicates
+        last_seen[emp_id] = now
         print(f"[RECORD]  recording attendance for {emp_id}…")
         snapshot_url = fs.upload_snapshot(emp_id, fe.save_face_temp(person_crop, emp_id))
         result = fs.record_attendance(emp_id, snapshot_url)
@@ -194,16 +214,13 @@ def _process_candidate(person_crop, bbox, source, now, frame=None):
               f"via {method} [{source}] score={score:.2f} → {result}")
 
     else:
-        # Unknown — debounce by grid position
         pos_key = f"unk_{x//80}_{y//80}"
         if last_seen.get(pos_key, 0) > now - DEBOUNCE_SECONDS:
             print(f"[DETECT]  skipped (debounce) — position {pos_key}")
             return
 
-        # Set debounce BEFORE Firestore calls so a failure doesn't cause duplicates
         last_seen[pos_key] = now
 
-        # Build annotated detection frame (full scene with bbox drawn)
         det_frame_b64 = _annotated_frame_b64(frame, bbox, f"Detected [{source}]") if frame is not None else None
 
         print(f"[RECORD]  creating unknown employee…")
@@ -233,12 +250,20 @@ while True:
         print("[WARN] Frame read failed. Reconnecting...")
         cap.release()
         time.sleep(3)
-        cap = cv2.VideoCapture(RTSP_URL)
+        cap = cv2.VideoCapture(current_cam_url)
         continue
 
     now = time.time()
 
-    # Periodic tasks
+    # Periodic: reload config from Firestore (picks up Settings page changes)
+    if now - last_config_check >= CONFIG_CHECK_INTERVAL:
+        try:
+            new_cfg = fs.load_config()
+            apply_config(new_cfg)
+            last_config_check = now
+        except Exception as e:
+            print(f"[WARN] Config reload failed: {e}")
+
     if now - last_refresh > REFRESH_INTERVAL:
         refresh_employees()
 
@@ -252,7 +277,7 @@ while True:
     if now - last_retrain >= RETRAIN_INTERVAL:
         try:
             run_retraining()
-            refresh_capture_targets()   # pick up any newly converted employees
+            refresh_capture_targets()
         except Exception as e:
             print(f"[WARN] Retraining failed: {e}")
         last_retrain = now
@@ -264,16 +289,9 @@ while True:
             print(f"[WARN] Cleanup failed: {e}")
         last_cleanup = now
 
-    # ── Detect all persons in this frame ────────────────────────────────────
-    # Layer 1: YOLO — accurate when person is clearly visible
     yolo_persons   = fe.detect_persons(frame)
-
-    # Layer 2: Motion detection — catches anyone YOLO missed
-    #          (partial body, unusual angle, fast movement, top-angle occlusion)
     motion_regions = fe.detect_motion_regions(frame)
-
-    # Merge: motion regions not already covered by a YOLO box become candidates
-    candidates = fe.merge_detections(yolo_persons, motion_regions)
+    candidates     = fe.merge_detections(yolo_persons, motion_regions)
 
     if motion_regions and not yolo_persons:
         print(f"[MOTION]  {len(motion_regions)} moving region(s) detected, YOLO found 0 persons — using motion fallback.")
