@@ -125,6 +125,88 @@ def run_retraining():
     refresh_employees()
 
 
+def _process_candidate(person_crop, bbox, source, now):
+    """
+    Process one detected person (from YOLO or motion fallback).
+    Each step is logged so failures are visible immediately.
+    Wrapped in try/except in the caller so one failure never stops the loop.
+    """
+    x, y, w, h = bbox
+
+    # Step 1 — face embedding (may be None for top-angle / no face visible)
+    face_emb = fe.get_face_embedding(person_crop)
+    print(f"[DETECT]  source={source} bbox=({x},{y},{w}×{h}) "
+          f"face={'yes' if face_emb is not None else 'no'}")
+
+    # Step 2 — body appearance histogram (always computed)
+    appearance = fe.get_body_appearance(person_crop)
+    if appearance is None:
+        print(f"[DETECT]  appearance extraction failed — crop too small?  size={person_crop.shape}")
+        return
+
+    # Step 3 — match against known employees
+    emp_id, score, method = fe.match_person(
+        face_emb, appearance, employees,
+        face_thresh=FACE_THRESHOLD,
+        appear_thresh=APPEAR_THRESHOLD,
+    )
+    print(f"[DETECT]  match={'FOUND: ' + emp_id if emp_id else 'none'} "
+          f"method={method} score={score:.3f}")
+
+    if emp_id:
+        # ── Frame capture for newly converted employees ──────────────────
+        if emp_id in capture_targets:
+            last_cap = capture_targets.get(emp_id, 0)
+            if now - last_cap >= CAPTURE_GAP:
+                try:
+                    done = save_capture_frame(emp_id, person_crop)
+                    capture_targets[emp_id] = now
+                    if done:
+                        del capture_targets[emp_id]
+                        print(f"[CAPTURE] {emp_id} — {CAPTURE_FRAMES} frames captured. Ready for review.")
+                    else:
+                        print(f"[CAPTURE] {emp_id} — frame saved…")
+                except Exception as e:
+                    print(f"[WARN] Capture frame failed for {emp_id}: {e}")
+
+        # Known employee — debounce
+        if last_seen.get(emp_id, 0) > now - DEBOUNCE_SECONDS:
+            print(f"[DETECT]  skipped (debounce) — {emp_id}")
+            return
+
+        print(f"[RECORD]  recording attendance for {emp_id}…")
+        snapshot_url = fs.upload_snapshot(emp_id, fe.save_face_temp(person_crop, emp_id))
+        result = fs.record_attendance(emp_id, snapshot_url)
+        last_seen[emp_id] = now
+        print(f"[MATCH]   {employees[emp_id]['name']} ({emp_id}) "
+              f"via {method} [{source}] score={score:.2f} → {result}")
+
+    else:
+        # Unknown — debounce by grid position
+        pos_key = f"unk_{x//80}_{y//80}"
+        if last_seen.get(pos_key, 0) > now - DEBOUNCE_SECONDS:
+            print(f"[DETECT]  skipped (debounce) — position {pos_key}")
+            return
+
+        print(f"[RECORD]  creating unknown employee…")
+        temp_path = fe.save_face_temp(person_crop, "unknown")
+        new_id, snapshot_url = fs.create_unknown_employee(temp_path, appearance)
+        print(f"[RECORD]  created {new_id}, recording attendance…")
+
+        if face_emb is not None:
+            fs.update_employee_encoding(new_id, face_emb)
+
+        result = fs.record_attendance(new_id, snapshot_url)
+        employees[new_id] = {
+            "name":       new_id,
+            "encoding":   face_emb if face_emb is not None else [],
+            "appearance": appearance,
+        }
+        last_seen[pos_key] = now
+        method_str = "face+appearance" if face_emb is not None else "appearance only"
+        print(f"[UNKNOWN] {new_id} via {method_str} [{source}] → {result}")
+
+
 refresh_employees()
 refresh_capture_targets()
 
@@ -180,70 +262,11 @@ while True:
         print(f"[MOTION]  {len(motion_regions)} moving region(s) detected, YOLO found 0 persons — using motion fallback.")
 
     for person_crop, bbox, source in candidates:
-
-        # Extract face embedding (may be None for top-angle views)
-        face_emb = fe.get_face_embedding(person_crop)
-
-        # Extract body appearance (always available as long as person is detected)
-        appearance = fe.get_body_appearance(person_crop)
-
-        # Match against known employees
-        emp_id, score, method = fe.match_person(
-            face_emb, appearance, employees,
-            face_thresh=FACE_THRESHOLD,
-            appear_thresh=APPEAR_THRESHOLD,
-        )
-
-        if emp_id:
-            # ── Frame capture for newly converted employees ──────────────────
-            if emp_id in capture_targets:
-                last_cap = capture_targets.get(emp_id, 0)
-                if now - last_cap >= CAPTURE_GAP:
-                    try:
-                        done = save_capture_frame(emp_id, person_crop)
-                        capture_targets[emp_id] = now
-                        if done:
-                            del capture_targets[emp_id]
-                            print(f"[CAPTURE] {emp_id} — {CAPTURE_FRAMES} frames captured. Ready for review.")
-                        else:
-                            count = list(capture_targets.keys()).index(emp_id) if emp_id in capture_targets else "?"
-                            print(f"[CAPTURE] {emp_id} — frame saved…")
-                    except Exception as e:
-                        print(f"[WARN] Capture frame failed for {emp_id}: {e}")
-
-            # Known employee — debounce attendance record
-            if last_seen.get(emp_id, 0) > now - DEBOUNCE_SECONDS:
-                continue
-
-            snapshot_url = fs.upload_snapshot(emp_id, fe.save_face_temp(person_crop, emp_id))
-            fs.record_attendance(emp_id, snapshot_url)
-            last_seen[emp_id] = now
-            print(f"[MATCH]   {employees[emp_id]['name']} ({emp_id}) "
-                  f"via {method} [{source}] — score: {score:.2f}")
-
-        else:
-            # Unknown person — debounce using a position-based key
-            x, y, w, h = bbox
-            pos_key = f"unk_{x//80}_{y//80}"   # grid cell ~80px, avoids re-creating same person
-            if last_seen.get(pos_key, 0) > now - DEBOUNCE_SECONDS:
-                continue
-
-            temp_path = fe.save_face_temp(person_crop, "unknown")
-            new_id, snapshot_url = fs.create_unknown_employee(temp_path, appearance)
-
-            # Try to get face embedding for the new unknown too
-            if face_emb is not None:
-                fs.update_employee_encoding(new_id, face_emb)
-
-            fs.record_attendance(new_id, snapshot_url)
-            employees[new_id] = {
-                "name": new_id,
-                "encoding": face_emb if face_emb is not None else [],
-                "appearance": appearance if appearance is not None else [],
-            }
-            last_seen[pos_key] = now
-            method_str = "face+appearance" if face_emb is not None else "appearance only"
-            print(f"[UNKNOWN] Created {new_id} via {method_str} [{source}] — score: {score:.2f}")
+        try:
+            _process_candidate(person_crop, bbox, source, now)
+        except Exception as e:
+            print(f"[ERROR] Candidate processing failed ({source}): {e}")
+            import traceback; traceback.print_exc()
 
     time.sleep(FRAME_INTERVAL)
 
