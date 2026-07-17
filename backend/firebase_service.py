@@ -28,6 +28,7 @@ def load_all_employees():
             "name":       data.get("name", doc.id),
             "encoding":   np.array(data["face_encoding"])   if has_face       else np.array([]),
             "appearance": np.array(data["body_appearance"]) if has_appearance else np.array([]),
+            "is_unknown": data.get("is_unknown", False),
         }
     return employees
 

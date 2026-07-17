@@ -214,6 +214,24 @@ def _process_candidate(person_crop, bbox, source, now, frame=None):
               f"via {method} [{source}] score={score:.2f} → {result}")
 
     else:
+        # ── Try re-matching against existing unknowns at 60% threshold ──────
+        unk_id, unk_score, unk_method = fe.find_best_unknown_match(
+            face_emb, appearance, employees, min_score=0.60
+        )
+
+        if unk_id:
+            # Seen this unknown before — just update their attendance end time
+            if last_seen.get(unk_id, 0) > now - DEBOUNCE_SECONDS:
+                print(f"[DETECT]  skipped (debounce) — existing unknown {unk_id}")
+                return
+            last_seen[unk_id] = now
+            snapshot_url = fs.upload_snapshot(unk_id, fe.save_face_temp(person_crop, unk_id))
+            result = fs.record_attendance(unk_id, snapshot_url)
+            print(f"[UNKNOWN] Re-matched {unk_id} via {unk_method} [{source}] "
+                  f"score={unk_score:.2f} → {result}")
+            return
+
+        # ── Truly new unknown — check position debounce then create ─────────
         pos_key = f"unk_{x//80}_{y//80}"
         if last_seen.get(pos_key, 0) > now - DEBOUNCE_SECONDS:
             print(f"[DETECT]  skipped (debounce) — position {pos_key}")
@@ -236,6 +254,7 @@ def _process_candidate(person_crop, bbox, source, now, frame=None):
             "name":       new_id,
             "encoding":   face_emb if face_emb is not None else [],
             "appearance": appearance,
+            "is_unknown": True,
         }
         method_str = "face+appearance" if face_emb is not None else "appearance only"
         print(f"[UNKNOWN] {new_id} via {method_str} [{source}] → {result}")
