@@ -84,7 +84,13 @@ def save_capture_frame(emp_id: str, person_crop):
 
 
 def run_retraining():
-    """Process employees with new training photos, update face + appearance encodings."""
+    """
+    Process employees with new training photos.
+    For each photo:
+      - Extract the face sub-region (if visible) → ArcFace embedding
+      - Use the full person crop → body appearance histogram
+    Average all valid embeddings and save back to Firestore.
+    """
     global employees
     pending = fs.get_employees_needing_retraining()
     if not pending:
@@ -94,20 +100,27 @@ def run_retraining():
         if not photos:
             continue
 
-        face_embeddings  = [fe.embedding_from_base64(p) for p in photos]
-        appear_features  = [fe.appearance_from_base64(p) for p in photos]
+        face_embeddings = []
+        appear_features = []
+        faces_found     = 0
 
-        face_embeddings  = [e for e in face_embeddings  if e is not None]
-        appear_features  = [a for a in appear_features  if a is not None]
+        for p in photos:
+            face_emb, appearance = fe.embeddings_from_b64(p)
+            if face_emb is not None:
+                face_embeddings.append(face_emb)
+                faces_found += 1
+            if appearance is not None:
+                appear_features.append(appearance)
 
-        avg_face       = fe.average_embeddings(face_embeddings)   if face_embeddings   else None
-        avg_appearance = fe.average_embeddings(appear_features)   if appear_features   else None
+        avg_face       = fe.average_embeddings(face_embeddings) if face_embeddings else None
+        avg_appearance = fe.average_embeddings(appear_features) if appear_features else None
 
         fs.save_retrained_encoding(emp_id, avg_face, avg_appearance)
 
-        face_str   = f"{len(face_embeddings)} face embed(s)"  if face_embeddings   else "no face"
-        appear_str = f"{len(appear_features)} appearance(s)"  if appear_features   else "no appearance"
-        print(f"[RETRAIN] {emp_id} — {face_str}, {appear_str} → saved.")
+        name = data.get("name", emp_id)
+        face_str   = f"{faces_found}/{len(photos)} faces extracted" if faces_found else "no face visible (top-angle only)"
+        appear_str = f"{len(appear_features)} appearance features"
+        print(f"[RETRAIN] {name} ({emp_id}) — {face_str}, {appear_str} → saved.")
 
     refresh_employees()
 

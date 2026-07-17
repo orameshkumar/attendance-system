@@ -173,28 +173,75 @@ def match_person(face_emb, appearance, employees: dict, face_thresh=0.60, appear
 
 # ── Training utilities ────────────────────────────────────────────────────────
 
-def embedding_from_base64(b64_str: str):
-    """Decode a base64 JPEG and return its ArcFace embedding, or None."""
+def decode_b64_image(b64_str: str):
+    """Decode a base64 JPEG/PNG string into a BGR numpy image, or None."""
     try:
         arr = np.frombuffer(base64.b64decode(b64_str), dtype=np.uint8)
         img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        if img is None:
-            return None
-        return get_embedding(img)
+        return img  # may be None if decode fails
     except Exception:
         return None
 
 
-def appearance_from_base64(b64_str: str):
-    """Decode a base64 JPEG and return its body appearance histogram, or None."""
+def _extract_face_crop(img):
+    """
+    Try to find a face inside img using two strategies:
+      1. DeepFace with OpenCV detector (handles partial/angled faces)
+      2. Haar cascade fallback
+    Returns the face crop (BGR), or None if no face found.
+    """
+    # Strategy 1: DeepFace detector — returns bounding box
     try:
-        arr = np.frombuffer(base64.b64decode(b64_str), dtype=np.uint8)
-        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        if img is None:
-            return None
-        return get_body_appearance(img)
+        results = DeepFace.extract_faces(
+            img,
+            detector_backend="opencv",
+            enforce_detection=True,
+            align=True,
+        )
+        if results:
+            face_arr = results[0]["face"]          # float 0-1, RGB
+            face_bgr = cv2.cvtColor(
+                (face_arr * 255).astype(np.uint8), cv2.COLOR_RGB2BGR
+            )
+            return face_bgr
     except Exception:
-        return None
+        pass
+
+    # Strategy 2: Haar cascade
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    cascade = cv2.CascadeClassifier(cascade_path)
+    dets = cascade.detectMultiScale(gray, 1.1, 4, minSize=(30, 30))
+    if len(dets) > 0:
+        x, y, w, h = dets[0]
+        return img[y:y+h, x:x+w]
+
+    return None
+
+
+def embeddings_from_b64(b64_str: str):
+    """
+    From a base64 training image (person crop or uploaded photo):
+      - Extract the face sub-region if visible → ArcFace embedding
+      - Use the full image for body appearance histogram
+
+    Returns (face_embedding | None, appearance | None).
+    """
+    img = decode_b64_image(b64_str)
+    if img is None:
+        return None, None
+
+    # Body appearance — always from the full crop
+    appearance = get_body_appearance(img)
+
+    # Face embedding — only from the detected face sub-region
+    face_crop = _extract_face_crop(img)
+    if face_crop is not None and face_crop.size > 0:
+        face_emb = get_embedding(face_crop)
+    else:
+        face_emb = None   # top-angle frame with no visible face — appearance only
+
+    return face_emb, appearance
 
 
 def average_embeddings(embeddings: list) -> np.ndarray:
