@@ -242,6 +242,43 @@ tbody tr:hover { background: #f8fafc; }
   line-height: 1;
 }
 
+/* ── Capture frame grid ──────────────────────────── */
+.capture-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  margin-bottom: 16px;
+}
+@media (max-width: 520px) {
+  .capture-grid { grid-template-columns: repeat(3, 1fr); }
+}
+.capture-slot {
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 2px solid #e2e8f0;
+  cursor: pointer;
+  aspect-ratio: 1;
+  background: #f8fafc;
+}
+.capture-slot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.capture-slot.selected { border-color: #2563eb; }
+.capture-check {
+  position: absolute; top: 4px; right: 4px;
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  background: #2563eb; color: #fff;
+  font-size: 11px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; transition: opacity 0.1s;
+}
+.capture-slot.selected .capture-check { opacity: 1; }
+.capture-label {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  background: rgba(0,0,0,0.45); color: #fff;
+  font-size: 10px; text-align: center; padding: 2px 0;
+}
+
 /* ── Hint text ───────────────────────────────── */
 .hint { font-size: 12px; color: #64748b; margin-top: 6px; }
 

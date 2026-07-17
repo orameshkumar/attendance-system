@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import {
-  collection, getDocs, doc, updateDoc, arrayUnion,
+  collection, getDocs, doc, updateDoc, arrayUnion, arrayRemove,
 } from "firebase/firestore";
 import { db } from "../firebase";
 
@@ -21,7 +21,13 @@ export default function Employees() {
     setLoading(false);
   }
 
-  async function saveEmployee(id, fields) {
+  async function saveEmployee(id, fields, wasUnknown) {
+    // When converting an unknown, automatically trigger frame capture
+    if (wasUnknown) {
+      fields.needs_capture   = true;
+      fields.capture_ready   = false;
+      fields.capture_frames  = [];
+    }
     await updateDoc(doc(db, "employees", id), fields);
     setModal(null);
     load();
@@ -34,7 +40,9 @@ export default function Employees() {
   });
 
   const unknownCount = employees.filter((e) => e.is_unknown).length;
-  const retrainCount = employees.filter((e) => e.needs_retraining).length;
+  const retrainCount  = employees.filter((e) => e.needs_retraining).length;
+  const captureCount  = employees.filter((e) => e.needs_capture).length;
+  const reviewCount   = employees.filter((e) => e.capture_ready).length;
 
   return (
     <div>
@@ -58,6 +66,16 @@ export default function Employees() {
         </div>
       </div>
 
+      {captureCount > 0 && (
+        <div className="retrain-banner" style={{ background: "#eff6ff", borderColor: "#bfdbfe", color: "#1e40af" }}>
+          📷 {captureCount} employee{captureCount > 1 ? "s" : ""} waiting for frame capture — walk past the camera to collect training frames
+        </div>
+      )}
+      {reviewCount > 0 && (
+        <div className="retrain-banner" style={{ background: "#f0fdf4", borderColor: "#bbf7d0", color: "#166534" }}>
+          ✅ {reviewCount} employee{reviewCount > 1 ? "s" : ""} ready for frame review — select the best frames to train recognition
+        </div>
+      )}
       {retrainCount > 0 && (
         <div className="retrain-banner">
           ⚙️ {retrainCount} employee{retrainCount > 1 ? "s" : ""} pending retraining — backend will update recognition automatically
@@ -117,13 +135,26 @@ export default function Employees() {
                         {e.is_unknown ? "Unknown" : "Known"}
                       </span>
                     </td>
-                    <td>
+                    <td style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                       <button
                         className="btn btn-sm btn-outline"
-                        onClick={() => setModal({ emp: e })}
+                        onClick={() => setModal({ emp: e, mode: "edit" })}
                       >
                         {e.is_unknown ? "Convert" : "Edit"}
                       </button>
+                      {e.capture_ready && (
+                        <button
+                          className="btn btn-sm btn-primary"
+                          onClick={() => setModal({ emp: e, mode: "review" })}
+                        >
+                          📷 Review
+                        </button>
+                      )}
+                      {e.needs_capture && !e.capture_ready && (
+                        <span className="badge unknown" style={{ alignSelf: "center" }}>
+                          capturing…
+                        </span>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -133,13 +164,19 @@ export default function Employees() {
         )}
       </div>
 
-      {modal && (
+      {modal?.mode === "review" ? (
+        <CaptureReviewModal
+          emp={modal.emp}
+          onClose={() => setModal(null)}
+          onTrained={() => { setModal(null); load(); }}
+        />
+      ) : modal ? (
         <EmployeeModal
           emp={modal.emp}
           onSave={saveEmployee}
           onClose={() => setModal(null)}
         />
-      )}
+      ) : null}
     </div>
   );
 }
@@ -215,7 +252,7 @@ function EmployeeModal({ emp, onSave, onClose }) {
         fields.training_photos = arrayUnion(...photos.map((p) => p.b64));
         fields.needs_retraining = true;
       }
-      await onSave(emp.id, fields);
+      await onSave(emp.id, fields, emp.is_unknown);
     } catch (err) {
       setError("Save failed: " + err.message);
       setSaving(false);
@@ -346,6 +383,92 @@ function EmployeeModal({ emp, onSave, onClose }) {
           <button className="btn btn-outline" onClick={onClose}>Cancel</button>
           <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
             {saving ? "Saving…" : emp.is_unknown ? "Convert to Employee" : "Save Changes"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Capture Review Modal ────────────────────────────────────── */
+function CaptureReviewModal({ emp, onClose, onTrained }) {
+  const frames  = emp.capture_frames || [];
+  const [selected, setSelected] = useState(new Set());
+  const [saving,   setSaving]   = useState(false);
+
+  function toggle(i) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(i) ? next.delete(i) : next.add(i);
+      return next;
+    });
+  }
+
+  function selectAll()  { setSelected(new Set(frames.map((_, i) => i))); }
+  function selectNone() { setSelected(new Set()); }
+
+  async function handleTrain() {
+    if (selected.size === 0) return;
+    setSaving(true);
+    try {
+      const chosen = [...selected].map((i) => frames[i]);
+      await updateDoc(doc(db, "employees", emp.id), {
+        training_photos:  arrayUnion(...chosen),
+        needs_retraining: true,
+        capture_ready:    false,
+        capture_frames:   [],
+      });
+      onTrained();
+    } catch (err) {
+      console.error(err);
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal modal-lg" onClick={(e) => e.stopPropagation()}>
+        <h2>Review Captured Frames — {emp.name}</h2>
+        <p className="hint" style={{ marginBottom: 12 }}>
+          {frames.length} frames captured from the CCTV. Select the clearest ones and click Train.
+        </p>
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
+          <button className="btn btn-sm btn-outline" onClick={selectAll}>Select All</button>
+          <button className="btn btn-sm btn-outline" onClick={selectNone}>None</button>
+          <span style={{ fontSize: 13, color: "#64748b" }}>
+            {selected.size} of {frames.length} selected
+          </span>
+        </div>
+
+        <div className="capture-grid">
+          {frames.map((b64, i) => (
+            <div
+              key={i}
+              className={`capture-slot${selected.has(i) ? " selected" : ""}`}
+              onClick={() => toggle(i)}
+            >
+              <img src={`data:image/jpeg;base64,${b64}`} alt={`Frame ${i + 1}`} />
+              <div className="capture-check">{selected.has(i) ? "✓" : ""}</div>
+              <div className="capture-label">#{i + 1}</div>
+            </div>
+          ))}
+        </div>
+
+        {frames.length === 0 && (
+          <div className="empty">No frames yet — walk past the camera to collect them.</div>
+        )}
+
+        <div className="modal-actions">
+          <button className="btn btn-outline" onClick={onClose}>Cancel</button>
+          <button
+            className="btn btn-primary"
+            onClick={handleTrain}
+            disabled={saving || selected.size === 0}
+          >
+            {saving
+              ? "Sending to training…"
+              : `Train with ${selected.size} frame${selected.size !== 1 ? "s" : ""}`}
           </button>
         </div>
       </div>

@@ -124,6 +124,28 @@ def record_attendance(emp_id, snapshot_url):
         return "updated"
 
 
+def get_employees_needing_capture():
+    """Return list of (doc_id, data) for employees awaiting frame capture."""
+    docs = _db().collection("employees").where("needs_capture", "==", True).stream()
+    return [(d.id, d.to_dict()) for d in docs]
+
+
+def add_capture_frame(emp_id: str, b64_frame: str, total: int):
+    """Append one captured frame. When total reached, mark capture complete."""
+    ref = _db().collection("employees").document(emp_id)
+    ref.update({"capture_frames": firestore.ArrayUnion([b64_frame])})
+    # Check how many we have now
+    snap = ref.get()
+    frames = snap.to_dict().get("capture_frames", [])
+    if len(frames) >= total:
+        ref.update({
+            "needs_capture":  False,
+            "capture_ready":  True,
+        })
+        return True   # capture complete
+    return False
+
+
 def get_employees_needing_retraining():
     """Return list of (doc_id, data) for employees flagged needs_retraining=True."""
     docs = _db().collection("employees").where("needs_retraining", "==", True).stream()

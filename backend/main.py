@@ -36,12 +36,15 @@ last_live_upload = 0
 last_cleanup     = 0
 last_retrain     = 0
 last_seen        = {}   # emp_id → timestamp, debounce duplicate records
+capture_targets  = {}   # emp_id → last_capture_ts, employees awaiting frame capture
+CAPTURE_FRAMES   = 10   # how many frames to collect per employee
 
 REFRESH_INTERVAL  = 300    # reload employee cache every 5 min
 LIVE_INTERVAL     = 5      # upload live preview frame every 5 sec
 CLEANUP_INTERVAL  = 3600   # delete old attendance records every 1 hour
 RETRAIN_INTERVAL  = 60     # check retraining queue every 60 sec
 DEBOUNCE_SECONDS  = 30     # ignore same person within 30 sec
+CAPTURE_GAP       = 2      # seconds between capture frames for same person
 
 
 def upload_live_frame(frame):
@@ -59,6 +62,25 @@ def refresh_employees():
     employees = fs.load_all_employees()
     last_refresh = time.time()
     print(f"[INFO] Loaded {len(employees)} employee profiles.")
+
+
+def refresh_capture_targets():
+    """Reload which employees are waiting for frame capture."""
+    global capture_targets
+    pending = fs.get_employees_needing_capture()
+    capture_targets = {emp_id: capture_targets.get(emp_id, 0) for emp_id, _ in pending}
+    if pending:
+        names = [f"{d.get('name', eid)} ({eid})" for eid, d in pending]
+        print(f"[CAPTURE] Watching for: {', '.join(names)}")
+
+
+def save_capture_frame(emp_id: str, person_crop):
+    """Resize person crop to 200×200 and store as base64 in Firestore."""
+    resized = cv2.resize(person_crop, (200, 200))
+    _, buf = cv2.imencode(".jpg", resized, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    b64 = __import__("base64").b64encode(buf).decode("utf-8")
+    done = fs.add_capture_frame(emp_id, b64, CAPTURE_FRAMES)
+    return done
 
 
 def run_retraining():
@@ -91,6 +113,7 @@ def run_retraining():
 
 
 refresh_employees()
+refresh_capture_targets()
 
 while True:
     ret, frame = cap.read()
@@ -117,6 +140,7 @@ while True:
     if now - last_retrain >= RETRAIN_INTERVAL:
         try:
             run_retraining()
+            refresh_capture_targets()   # pick up any newly converted employees
         except Exception as e:
             print(f"[WARN] Retraining failed: {e}")
         last_retrain = now
@@ -147,7 +171,23 @@ while True:
         )
 
         if emp_id:
-            # Known employee — debounce
+            # ── Frame capture for newly converted employees ──────────────────
+            if emp_id in capture_targets:
+                last_cap = capture_targets.get(emp_id, 0)
+                if now - last_cap >= CAPTURE_GAP:
+                    try:
+                        done = save_capture_frame(emp_id, person_crop)
+                        capture_targets[emp_id] = now
+                        if done:
+                            del capture_targets[emp_id]
+                            print(f"[CAPTURE] {emp_id} — {CAPTURE_FRAMES} frames captured. Ready for review.")
+                        else:
+                            count = list(capture_targets.keys()).index(emp_id) if emp_id in capture_targets else "?"
+                            print(f"[CAPTURE] {emp_id} — frame saved…")
+                    except Exception as e:
+                        print(f"[WARN] Capture frame failed for {emp_id}: {e}")
+
+            # Known employee — debounce attendance record
             if last_seen.get(emp_id, 0) > now - DEBOUNCE_SECONDS:
                 continue
 
