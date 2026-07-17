@@ -336,6 +336,39 @@ def match_person(face_emb, appearance, employees: dict, face_thresh=0.60, appear
     return None, best_score, best_method
 
 
+def find_ignored_match(face_emb, appearance, employees: dict, min_score=0.60):
+    """
+    Check if the detected person/object matches any employee flagged is_ignored=True.
+    If yes, the caller should silently skip this detection entirely.
+    Returns (emp_id, score, method) or (None, 0.0, 'none').
+    """
+    best_id     = None
+    best_score  = 0.0
+    best_method = "none"
+
+    for emp_id, data in employees.items():
+        if not data.get("is_ignored"):
+            continue
+
+        if face_emb is not None and len(data.get("encoding", [])) > 0:
+            score = cosine_similarity(face_emb, data["encoding"])
+            if score > best_score:
+                best_score  = score
+                best_id     = emp_id
+                best_method = "face"
+
+        if appearance is not None and len(data.get("appearance", [])) > 0:
+            score = appearance_similarity(appearance, data["appearance"])
+            if score > best_score:
+                best_score  = score
+                best_id     = emp_id
+                best_method = "appearance"
+
+    if best_score >= min_score:
+        return best_id, best_score, best_method
+    return None, best_score, best_method
+
+
 def find_best_unknown_match(face_emb, appearance, employees: dict, min_score=0.60):
     """
     Among employees flagged is_unknown=True, find the best match above min_score.

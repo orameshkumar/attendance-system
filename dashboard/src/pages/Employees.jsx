@@ -57,6 +57,12 @@ export default function Employees() {
     setLoading(false);
   }
 
+  async function toggleIgnore(emp) {
+    const newVal = !emp.is_ignored;
+    await updateDoc(doc(db, "employees", emp.id), { is_ignored: newVal });
+    load();
+  }
+
   async function saveEmployee(id, fields, wasUnknown, captureFrames, uploadedPhotos = []) {
     if (wasUnknown) {
       fields.needs_capture  = true;
@@ -110,12 +116,14 @@ export default function Employees() {
   }
 
   const filtered = employees.filter((e) => {
-    if (filter === "unknown") return e.is_unknown;
-    if (filter === "known")   return !e.is_unknown;
-    return true;
+    if (filter === "unknown")  return e.is_unknown && !e.is_ignored;
+    if (filter === "known")    return !e.is_unknown && !e.is_ignored;
+    if (filter === "ignored")  return e.is_ignored;
+    return !e.is_ignored; // "all" hides ignored by default
   });
 
-  const unknownCount = employees.filter((e) => e.is_unknown).length;
+  const unknownCount = employees.filter((e) => e.is_unknown  && !e.is_ignored).length;
+  const ignoredCount = employees.filter((e) => e.is_ignored).length;
   const retrainCount = employees.filter((e) => e.needs_retraining).length;
   const captureCount = employees.filter((e) => e.needs_capture).length;
   const reviewCount  = employees.filter((e) => e.capture_ready).length;
@@ -162,13 +170,18 @@ export default function Employees() {
 
       <div className="card">
         <div className="toolbar">
-          {["all", "known", "unknown"].map((f) => (
+          {[
+            { key: "all",     label: "All" },
+            { key: "known",   label: "Known" },
+            { key: "unknown", label: "Unknown" },
+            { key: "ignored", label: `Ignored${ignoredCount > 0 ? ` (${ignoredCount})` : ""}` },
+          ].map(({ key, label }) => (
             <button
-              key={f}
-              className={`btn btn-sm ${filter === f ? "btn-primary" : "btn-outline"}`}
-              onClick={() => { setFilter(f); setSelected(new Set()); }}
+              key={key}
+              className={`btn btn-sm ${filter === key ? "btn-primary" : "btn-outline"}`}
+              onClick={() => { setFilter(key); setSelected(new Set()); }}
             >
-              {f.charAt(0).toUpperCase() + f.slice(1)}
+              {label}
             </button>
           ))}
           {selected.size > 0 && (
@@ -253,18 +266,32 @@ export default function Employees() {
                       </td>
                       <td>{e.department || "—"}</td>
                       <td>
-                        <span className={`badge ${e.is_unknown ? "unknown" : "present"}`}>
-                          {e.is_unknown ? "Unknown" : "Known"}
-                        </span>
+                        {e.is_ignored
+                          ? <span className="badge absent">Ignored</span>
+                          : <span className={`badge ${e.is_unknown ? "unknown" : "present"}`}>
+                              {e.is_unknown ? "Unknown" : "Known"}
+                            </span>}
                       </td>
                       <td style={{ fontSize: 13 }}>{att ? fmtTime(att.in_time) : "—"}</td>
                       <td style={{ fontSize: 13 }}>{att ? fmtTime(att.out_time) : "—"}</td>
                       <td style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        {!e.is_ignored && (
+                          <button
+                            className="btn btn-sm btn-outline"
+                            onClick={() => setModal({ emp: e, mode: "edit" })}
+                          >
+                            {e.is_unknown ? "Convert" : "Edit"}
+                          </button>
+                        )}
                         <button
                           className="btn btn-sm btn-outline"
-                          onClick={() => setModal({ emp: e, mode: "edit" })}
+                          style={e.is_ignored
+                            ? { color: "#16a34a", borderColor: "#86efac" }
+                            : { color: "#64748b", borderColor: "#cbd5e1" }}
+                          onClick={() => toggleIgnore(e)}
+                          title={e.is_ignored ? "Remove from ignore list" : "Ignore this detection"}
                         >
-                          {e.is_unknown ? "Convert" : "Edit"}
+                          {e.is_ignored ? "Unignore" : "Ignore"}
                         </button>
                         {e.capture_ready && (
                           <button

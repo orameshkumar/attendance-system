@@ -179,6 +179,12 @@ def _process_candidate(person_crop, bbox, source, now, frame=None):
         print(f"[DETECT]  appearance extraction failed — crop too small?  size={person_crop.shape}")
         return
 
+    # Check against ignored objects before doing any matching or recording
+    ign_id, ign_score, ign_method = fe.find_ignored_match(face_emb, appearance, employees)
+    if ign_id:
+        print(f"[IGNORE]  matched ignored record {ign_id} via {ign_method} score={ign_score:.2f} — skipping")
+        return
+
     emp_id, score, method = fe.match_person(
         face_emb, appearance, employees,
         face_thresh=FACE_THRESHOLD,
