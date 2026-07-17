@@ -125,7 +125,19 @@ def run_retraining():
     refresh_employees()
 
 
-def _process_candidate(person_crop, bbox, source, now):
+def _annotated_frame_b64(frame, bbox, label="Motion detected"):
+    """Draw bbox on a copy of the frame, resize to 320×180, return base64 JPEG."""
+    x, y, w, h = bbox
+    vis = frame.copy()
+    cv2.rectangle(vis, (x, y), (x + w, y + h), (0, 255, 0), 3)
+    cv2.putText(vis, label, (x, max(y - 8, 20)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+    small = cv2.resize(vis, (320, 180))
+    _, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 55])
+    return base64.b64encode(buf).decode("utf-8")
+
+
+def _process_candidate(person_crop, bbox, source, now, frame=None):
     """
     Process one detected person (from YOLO or motion fallback).
     Each step is logged so failures are visible immediately.
@@ -191,9 +203,12 @@ def _process_candidate(person_crop, bbox, source, now):
         # Set debounce BEFORE Firestore calls so a failure doesn't cause duplicates
         last_seen[pos_key] = now
 
+        # Build annotated detection frame (full scene with bbox drawn)
+        det_frame_b64 = _annotated_frame_b64(frame, bbox, f"Detected [{source}]") if frame is not None else None
+
         print(f"[RECORD]  creating unknown employee…")
         temp_path = fe.save_face_temp(person_crop, "unknown")
-        new_id, snapshot_url = fs.create_unknown_employee(temp_path, appearance)
+        new_id, snapshot_url = fs.create_unknown_employee(temp_path, appearance, det_frame_b64)
         print(f"[RECORD]  created {new_id}, recording attendance…")
 
         if face_emb is not None:
@@ -265,7 +280,7 @@ while True:
 
     for person_crop, bbox, source in candidates:
         try:
-            _process_candidate(person_crop, bbox, source, now)
+            _process_candidate(person_crop, bbox, source, now, frame=frame)
         except Exception as e:
             print(f"[ERROR] Candidate processing failed ({source}): {e}")
             import traceback; traceback.print_exc()

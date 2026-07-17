@@ -104,7 +104,8 @@ export default function Employees() {
             <table>
               <thead>
                 <tr>
-                  <th>Photo</th>
+                  <th>Crop</th>
+                  <th>Detection</th>
                   <th>ID</th>
                   <th>Name</th>
                   <th>Department</th>
@@ -115,11 +116,26 @@ export default function Employees() {
               <tbody>
                 {filtered.map((e) => (
                   <tr key={e.id}>
+                    {/* Person crop */}
                     <td>
                       {e.face_snapshot_url ? (
                         <img className="avatar" src={e.face_snapshot_url} alt="" />
                       ) : (
                         <div className="avatar" />
+                      )}
+                    </td>
+                    {/* Annotated detection frame — only for unknowns */}
+                    <td>
+                      {e.detection_frame ? (
+                        <img
+                          src={`data:image/jpeg;base64,${e.detection_frame}`}
+                          alt="detection"
+                          className="det-thumb"
+                          onClick={() => setModal({ emp: e, mode: "detection" })}
+                          title="Click to enlarge"
+                        />
+                      ) : (
+                        <span style={{ color: "#cbd5e1", fontSize: 11 }}>—</span>
                       )}
                     </td>
                     <td style={{ fontFamily: "monospace", fontSize: 12 }}>{e.id}</td>
@@ -169,6 +185,12 @@ export default function Employees() {
           emp={modal.emp}
           onClose={() => setModal(null)}
           onTrained={() => { setModal(null); load(); }}
+        />
+      ) : modal?.mode === "detection" ? (
+        <DetectionFrameModal
+          emp={modal.emp}
+          onClose={() => setModal(null)}
+          onConvert={() => setModal({ emp: modal.emp, mode: "edit" })}
         />
       ) : modal ? (
         <EmployeeModal
@@ -470,6 +492,51 @@ function CaptureReviewModal({ emp, onClose, onTrained }) {
               ? "Sending to training…"
               : `Train with ${selected.size} frame${selected.size !== 1 ? "s" : ""}`}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Detection Frame Modal ───────────────────────────────────── */
+function DetectionFrameModal({ emp, onClose, onConvert }) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal modal-lg" onClick={(e) => e.stopPropagation()}>
+        <h2>Detection Scene — {emp.id}</h2>
+        <p className="hint" style={{ marginBottom: 12 }}>
+          This is the exact frame where the system detected movement.
+          The green box shows where in the scene the person was found.
+        </p>
+
+        {emp.detection_frame ? (
+          <img
+            src={`data:image/jpeg;base64,${emp.detection_frame}`}
+            alt="detection scene"
+            style={{ width: "100%", borderRadius: 8, border: "1px solid #e2e8f0" }}
+          />
+        ) : (
+          <div className="empty">No detection frame stored for this record.</div>
+        )}
+
+        {emp.face_snapshot_url && (
+          <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 10 }}>
+            <img
+              src={emp.face_snapshot_url}
+              alt="person crop"
+              style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 6, border: "1px solid #e2e8f0" }}
+            />
+            <span style={{ fontSize: 12, color: "#64748b" }}>Person crop (extracted from bounding box)</span>
+          </div>
+        )}
+
+        <div className="modal-actions">
+          <button className="btn btn-outline" onClick={onClose}>Close</button>
+          {emp.is_unknown && (
+            <button className="btn btn-primary" onClick={onConvert}>
+              Convert to Employee →
+            </button>
+          )}
         </div>
       </div>
     </div>

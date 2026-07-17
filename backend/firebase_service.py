@@ -37,7 +37,7 @@ def get_unknown_count():
     return sum(1 for _ in docs)
 
 
-def create_unknown_employee(img_path, appearance=None):
+def create_unknown_employee(img_path, appearance=None, detection_frame_b64=None):
     count = get_unknown_count() + 1
     emp_id = f"Unknown{str(count).zfill(3)}"
     snapshot_url = upload_snapshot(emp_id, img_path)
@@ -47,6 +47,7 @@ def create_unknown_employee(img_path, appearance=None):
         "face_encoding": [],
         "body_appearance": appearance.tolist() if appearance is not None else [],
         "face_snapshot_url": snapshot_url,
+        "detection_frame": detection_frame_b64 or "",   # annotated scene image
         "is_unknown": True,
         "created_at": firestore.SERVER_TIMESTAMP,
     }
