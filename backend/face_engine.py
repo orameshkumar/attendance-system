@@ -29,7 +29,7 @@ _mog2 = cv2.createBackgroundSubtractorMOG2(
 )
 
 # Keep previous frame for absdiff fallback
-_prev_frame: np.ndarray | None = None
+_prev_frame = None   # np.ndarray or None
 
 # ── YOLO person detector (lazy load) ─────────────────────────────────────────
 _yolo_model = None
