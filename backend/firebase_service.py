@@ -69,11 +69,13 @@ def record_attendance(emp_id, snapshot_url):
     now   = datetime.now()
     db    = _db()
 
-    # Get all of today's records for this employee, sorted by out_time desc
+    # Get only the latest record for today (ordered by out_time desc, limit 1)
     docs = list(
         db.collection("attendance")
         .where("emp_id", "==", emp_id)
         .where("date", "==", today)
+        .order_by("out_time", direction=firestore.Query.DESCENDING)
+        .limit(1)
         .stream()
     )
 
@@ -89,8 +91,8 @@ def record_attendance(emp_id, snapshot_url):
         })
         return "created"
 
-    # Find the record with the latest out_time
-    latest = max(docs, key=lambda d: d.to_dict().get("out_time", ""))
+    # This is already the latest record
+    latest = docs[0]
     latest_data = latest.to_dict()
     last_out = datetime.fromisoformat(latest_data["out_time"])
     gap_seconds = (now - last_out).total_seconds()
