@@ -35,11 +35,13 @@ employees        = {}
 last_refresh     = 0
 last_live_upload = 0
 last_cleanup     = 0
+last_retrain     = 0
 last_seen        = {}
 
-REFRESH_INTERVAL = 300   # refresh employee cache every 5 min
-LIVE_INTERVAL    = 5     # upload live frame every 5 sec
-CLEANUP_INTERVAL = 3600  # run cleanup every 1 hour
+REFRESH_INTERVAL  = 300   # refresh employee cache every 5 min
+LIVE_INTERVAL     = 5     # upload live frame every 5 sec
+CLEANUP_INTERVAL  = 3600  # run cleanup every 1 hour
+RETRAIN_INTERVAL  = 60    # check for retraining jobs every 60 sec
 
 
 def upload_live_frame(frame):
@@ -85,7 +87,31 @@ while True:
         except Exception as e:
             print(f"[WARN] Live frame upload failed: {e}")
 
-    # Cleanup old records every 2 hours
+    # Retrain any employees that have new training photos
+    if now - last_retrain >= RETRAIN_INTERVAL:
+        try:
+            pending = fs.get_employees_needing_retraining()
+            for emp_id, data in pending:
+                photos = data.get("training_photos", [])
+                if not photos:
+                    fs.save_retrained_encoding.__func__ if False else None  # skip
+                    continue
+                embeddings = [fe.embedding_from_base64(p) for p in photos]
+                embeddings = [e for e in embeddings if e is not None]
+                if embeddings:
+                    avg = fe.average_embeddings(embeddings)
+                    fs.save_retrained_encoding(emp_id, avg)
+                    print(f"[RETRAIN] {emp_id} — averaged {len(embeddings)} photo(s), encoding updated.")
+                else:
+                    print(f"[RETRAIN] {emp_id} — no valid face found in training photos, skipping.")
+            last_retrain = now
+            if pending:
+                refresh_employees()  # reload cache with new encodings
+        except Exception as e:
+            print(f"[WARN] Retrain check failed: {e}")
+            last_retrain = now
+
+    # Cleanup old records every hour
     if now - last_cleanup >= CLEANUP_INTERVAL:
         try:
             fs.cleanup_old_records()

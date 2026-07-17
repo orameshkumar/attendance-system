@@ -1,3 +1,4 @@
+import base64
 import cv2
 import numpy as np
 import os
@@ -74,3 +75,24 @@ def save_face_temp(face_img, prefix="face") -> str:
     path = os.path.join(SNAPSHOT_DIR, f"{prefix}_temp.jpg")
     cv2.imwrite(path, face_img)
     return path
+
+
+def embedding_from_base64(b64_str: str):
+    """Decode a base64 JPEG and return its ArcFace embedding, or None on failure."""
+    try:
+        img_bytes = base64.b64decode(b64_str)
+        arr = np.frombuffer(img_bytes, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if img is None:
+            return None
+        return get_embedding(img)
+    except Exception:
+        return None
+
+
+def average_embeddings(embeddings: list) -> np.ndarray:
+    """Return the L2-normalised mean of a list of embeddings."""
+    stacked = np.stack(embeddings, axis=0)
+    mean = stacked.mean(axis=0)
+    norm = np.linalg.norm(mean)
+    return mean / norm if norm > 0 else mean

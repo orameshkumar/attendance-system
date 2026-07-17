@@ -117,6 +117,21 @@ def record_attendance(emp_id, snapshot_url):
         return "updated"
 
 
+def get_employees_needing_retraining():
+    """Return list of (doc_id, data) for employees flagged needs_retraining=True."""
+    docs = _db().collection("employees").where("needs_retraining", "==", True).stream()
+    return [(d.id, d.to_dict()) for d in docs]
+
+
+def save_retrained_encoding(emp_id: str, encoding):
+    _db().collection("employees").document(emp_id).update({
+        "face_encoding":    encoding.tolist(),
+        "needs_retraining": False,
+        "training_photos":  [],          # clear stored photos after processing
+        "retrained_at":     firestore.SERVER_TIMESTAMP,
+    })
+
+
 def cleanup_old_records():
     """Delete attendance records with date older than RETENTION_DAYS."""
     cutoff = (date.today() - timedelta(days=RETENTION_DAYS)).isoformat()
