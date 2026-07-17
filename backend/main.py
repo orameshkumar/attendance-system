@@ -174,10 +174,10 @@ def _process_candidate(person_crop, bbox, source, now):
             print(f"[DETECT]  skipped (debounce) — {emp_id}")
             return
 
+        last_seen[emp_id] = now   # set before Firestore so failure doesn't cause duplicates
         print(f"[RECORD]  recording attendance for {emp_id}…")
         snapshot_url = fs.upload_snapshot(emp_id, fe.save_face_temp(person_crop, emp_id))
         result = fs.record_attendance(emp_id, snapshot_url)
-        last_seen[emp_id] = now
         print(f"[MATCH]   {employees[emp_id]['name']} ({emp_id}) "
               f"via {method} [{source}] score={score:.2f} → {result}")
 
@@ -187,6 +187,9 @@ def _process_candidate(person_crop, bbox, source, now):
         if last_seen.get(pos_key, 0) > now - DEBOUNCE_SECONDS:
             print(f"[DETECT]  skipped (debounce) — position {pos_key}")
             return
+
+        # Set debounce BEFORE Firestore calls so a failure doesn't cause duplicates
+        last_seen[pos_key] = now
 
         print(f"[RECORD]  creating unknown employee…")
         temp_path = fe.save_face_temp(person_crop, "unknown")
@@ -202,7 +205,6 @@ def _process_candidate(person_crop, bbox, source, now):
             "encoding":   face_emb if face_emb is not None else [],
             "appearance": appearance,
         }
-        last_seen[pos_key] = now
         method_str = "face+appearance" if face_emb is not None else "appearance only"
         print(f"[UNKNOWN] {new_id} via {method_str} [{source}] → {result}")
 

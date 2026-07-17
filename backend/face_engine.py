@@ -19,7 +19,7 @@ from deepface import DeepFace
 from ultralytics import YOLO
 
 SNAPSHOT_DIR    = "snapshots_temp"
-MIN_MOTION_AREA = int(os.getenv("MIN_MOTION_AREA", 2500))  # px² — ignore blobs smaller than this
+MIN_MOTION_AREA = int(os.getenv("MIN_MOTION_AREA", 15000))  # px² — real person at typical distance
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 
 # ── Background subtractor (MOG2) ──────────────────────────────────────────────
