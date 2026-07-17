@@ -46,33 +46,46 @@ def _yolo():
 
 def _motion_mask(frame: np.ndarray) -> np.ndarray:
     """
-    Combine MOG2 background subtraction with frame-diff for robust motion detection.
-    MOG2 catches slow movers; absdiff catches sudden fast movement.
-    Returns a binary uint8 mask (255 = motion).
+    Combine MOG2 + frame-diff, then aggressively fill gaps so that all
+    scattered blobs from one moving person merge into a single solid region.
+
+    Key insight from camera output: diff detects edge fragments (head outline,
+    arm edges, leg edges separately). We need large morphological kernels to
+    bridge those gaps — for a person 300–500px tall, gap can be 60–120px.
     """
     global _prev_frame
 
-    # MOG2 foreground mask
+    fh, fw = frame.shape[:2]
+
+    # ── MOG2 foreground mask ────────────────────────────────────────────
     mog_mask = _mog2.apply(frame)
 
-    # Frame-difference mask
+    # ── Frame-difference mask ───────────────────────────────────────────
     if _prev_frame is not None:
-        diff   = cv2.absdiff(_prev_frame, frame)
-        gray   = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+        diff  = cv2.absdiff(_prev_frame, frame)
+        gray  = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
         _, diff_mask = cv2.threshold(gray, 20, 255, cv2.THRESH_BINARY)
     else:
-        diff_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+        diff_mask = np.zeros((fh, fw), dtype=np.uint8)
 
     _prev_frame = frame.copy()
 
-    # Union of both masks
+    # ── Combine both signals ─────────────────────────────────────────────
     combined = cv2.bitwise_or(mog_mask, diff_mask)
 
-    # Morphological cleanup: close small holes, remove isolated noise
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel, iterations=2)
-    combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN,  kernel, iterations=1)
-    combined = cv2.dilate(combined, kernel, iterations=2)
+    # ── Step 1: small open to remove single-pixel noise ─────────────────
+    k_noise = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, k_noise, iterations=1)
+
+    # ── Step 2: large CLOSE to fill gaps between body-part fragments ─────
+    # Gap size scales with frame width: ~6% of width bridges arm-to-torso gaps
+    gap_px = max(20, int(fw * 0.06))   # ~115px for 1920-wide frame
+    k_fill = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (gap_px, gap_px))
+    combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, k_fill, iterations=3)
+
+    # ── Step 3: dilate to expand each region into a solid body-sized blob ─
+    k_expand = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+    combined = cv2.dilate(combined, k_expand, iterations=2)
 
     return combined
 
@@ -122,8 +135,11 @@ def _iou(a, b) -> float:
 def _merge_overlapping(frame, regions, iou_thresh=0.05):
     """
     Merge nearby / touching regions.
-    Uses a low IoU threshold (0.05) so even adjacent blobs merge.
+    Gap threshold scales with frame width so it works at any resolution.
     """
+    fw = frame.shape[1]
+    gap = max(60, int(fw * 0.08))   # ~154px for 1920-wide frame
+
     boxes = [r[1] for r in regions]
     merged = True
     while merged:
@@ -137,8 +153,8 @@ def _merge_overlapping(frame, regions, iou_thresh=0.05):
             for j, b in enumerate(boxes):
                 if i == j or used[j]:
                     continue
-                if _iou(a, b) > iou_thresh or _boxes_close(a, b, gap=40):
-                    x1 = min(x1, b[0]);     y1 = min(y1, b[1])
+                if _iou(a, b) > iou_thresh or _boxes_close(a, b, gap=gap):
+                    x1 = min(x1, b[0]);      y1 = min(y1, b[1])
                     x2 = max(x2, b[0]+b[2]); y2 = max(y2, b[1]+b[3])
                     used[j] = True
                     merged = True
