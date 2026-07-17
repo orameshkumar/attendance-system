@@ -1,4 +1,4 @@
-opencv-python
+opencv-python==4.10.0.84
 deepface
 numpy
 firebase-admin
@@ -6,3 +6,4 @@ Pillow
 schedule
 python-dotenv
 tf-keras
+ultralytics

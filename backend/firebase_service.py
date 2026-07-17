@@ -15,15 +15,20 @@ def _db():
 
 
 def load_all_employees():
+    """Load all employees that have at least a face encoding OR body appearance."""
     employees = {}
     docs = _db().collection("employees").stream()
     for doc in docs:
         data = doc.to_dict()
-        if data.get("face_encoding"):
-            employees[doc.id] = {
-                "name": data.get("name", doc.id),
-                "encoding": np.array(data["face_encoding"]),
-            }
+        has_face       = bool(data.get("face_encoding"))
+        has_appearance = bool(data.get("body_appearance"))
+        if not (has_face or has_appearance):
+            continue
+        employees[doc.id] = {
+            "name":       data.get("name", doc.id),
+            "encoding":   np.array(data["face_encoding"])   if has_face       else np.array([]),
+            "appearance": np.array(data["body_appearance"]) if has_appearance else np.array([]),
+        }
     return employees
 
 
@@ -32,18 +37,20 @@ def get_unknown_count():
     return sum(1 for _ in docs)
 
 
-def create_unknown_employee(face_img_path):
+def create_unknown_employee(img_path, appearance=None):
     count = get_unknown_count() + 1
     emp_id = f"Unknown{str(count).zfill(3)}"
-    snapshot_url = upload_snapshot(emp_id, face_img_path)
-    _db().collection("employees").document(emp_id).set({
+    snapshot_url = upload_snapshot(emp_id, img_path)
+    doc = {
         "name": emp_id,
         "department": "",
         "face_encoding": [],
+        "body_appearance": appearance.tolist() if appearance is not None else [],
         "face_snapshot_url": snapshot_url,
         "is_unknown": True,
         "created_at": firestore.SERVER_TIMESTAMP,
-    })
+    }
+    _db().collection("employees").document(emp_id).set(doc)
     return emp_id, snapshot_url
 
 
@@ -123,13 +130,16 @@ def get_employees_needing_retraining():
     return [(d.id, d.to_dict()) for d in docs]
 
 
-def save_retrained_encoding(emp_id: str, encoding):
-    _db().collection("employees").document(emp_id).update({
-        "face_encoding":    encoding.tolist(),
+def save_retrained_encoding(emp_id: str, encoding, appearance=None):
+    update = {
+        "face_encoding":    encoding.tolist() if encoding is not None else [],
         "needs_retraining": False,
-        "training_photos":  [],          # clear stored photos after processing
+        "training_photos":  [],
         "retrained_at":     firestore.SERVER_TIMESTAMP,
-    })
+    }
+    if appearance is not None:
+        update["body_appearance"] = appearance.tolist()
+    _db().collection("employees").document(emp_id).update(update)
 
 
 def cleanup_old_records():

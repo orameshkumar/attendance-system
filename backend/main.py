@@ -5,7 +5,6 @@ import cv2
 import firebase_admin
 from firebase_admin import credentials, firestore as _fs
 from dotenv import load_dotenv
-from datetime import datetime, timezone, timedelta
 
 import face_engine as fe
 import firebase_service as fs
@@ -15,8 +14,8 @@ load_dotenv()
 RTSP_URL          = os.getenv("RTSP_URL", "rtsp://orameshkumar:orameshkumar@192.168.1.19:554/stream1")
 SERVICE_ACCOUNT_KEY = os.getenv("SERVICE_ACCOUNT_KEY", "serviceAccountKey.json")
 FRAME_INTERVAL    = int(os.getenv("FRAME_INTERVAL_SECONDS", 3))
-MATCH_THRESHOLD   = float(os.getenv("MATCH_THRESHOLD", 0.60))
-RETENTION_HOURS   = int(os.getenv("RETENTION_HOURS", 2))
+FACE_THRESHOLD    = float(os.getenv("MATCH_THRESHOLD", 0.60))
+APPEAR_THRESHOLD  = float(os.getenv("APPEAR_THRESHOLD", 0.75))
 
 # Initialize Firebase
 cred = credentials.Certificate(SERVICE_ACCOUNT_KEY)
@@ -36,12 +35,13 @@ last_refresh     = 0
 last_live_upload = 0
 last_cleanup     = 0
 last_retrain     = 0
-last_seen        = {}
+last_seen        = {}   # emp_id → timestamp, debounce duplicate records
 
-REFRESH_INTERVAL  = 300   # refresh employee cache every 5 min
-LIVE_INTERVAL     = 5     # upload live frame every 5 sec
-CLEANUP_INTERVAL  = 3600  # run cleanup every 1 hour
-RETRAIN_INTERVAL  = 60    # check for retraining jobs every 60 sec
+REFRESH_INTERVAL  = 300    # reload employee cache every 5 min
+LIVE_INTERVAL     = 5      # upload live preview frame every 5 sec
+CLEANUP_INTERVAL  = 3600   # delete old attendance records every 1 hour
+RETRAIN_INTERVAL  = 60     # check retraining queue every 60 sec
+DEBOUNCE_SECONDS  = 30     # ignore same person within 30 sec
 
 
 def upload_live_frame(frame):
@@ -54,12 +54,40 @@ def upload_live_frame(frame):
     })
 
 
-
 def refresh_employees():
     global employees, last_refresh
     employees = fs.load_all_employees()
     last_refresh = time.time()
-    print(f"[INFO] Loaded {len(employees)} employee encodings.")
+    print(f"[INFO] Loaded {len(employees)} employee profiles.")
+
+
+def run_retraining():
+    """Process employees with new training photos, update face + appearance encodings."""
+    global employees
+    pending = fs.get_employees_needing_retraining()
+    if not pending:
+        return
+    for emp_id, data in pending:
+        photos = data.get("training_photos", [])
+        if not photos:
+            continue
+
+        face_embeddings  = [fe.embedding_from_base64(p) for p in photos]
+        appear_features  = [fe.appearance_from_base64(p) for p in photos]
+
+        face_embeddings  = [e for e in face_embeddings  if e is not None]
+        appear_features  = [a for a in appear_features  if a is not None]
+
+        avg_face       = fe.average_embeddings(face_embeddings)   if face_embeddings   else None
+        avg_appearance = fe.average_embeddings(appear_features)   if appear_features   else None
+
+        fs.save_retrained_encoding(emp_id, avg_face, avg_appearance)
+
+        face_str   = f"{len(face_embeddings)} face embed(s)"  if face_embeddings   else "no face"
+        appear_str = f"{len(appear_features)} appearance(s)"  if appear_features   else "no appearance"
+        print(f"[RETRAIN] {emp_id} — {face_str}, {appear_str} → saved.")
+
+    refresh_employees()
 
 
 refresh_employees()
@@ -75,11 +103,10 @@ while True:
 
     now = time.time()
 
-    # Refresh employee list periodically
+    # Periodic tasks
     if now - last_refresh > REFRESH_INTERVAL:
         refresh_employees()
 
-    # Upload live preview frame
     if now - last_live_upload >= LIVE_INTERVAL:
         try:
             upload_live_frame(frame)
@@ -87,31 +114,13 @@ while True:
         except Exception as e:
             print(f"[WARN] Live frame upload failed: {e}")
 
-    # Retrain any employees that have new training photos
     if now - last_retrain >= RETRAIN_INTERVAL:
         try:
-            pending = fs.get_employees_needing_retraining()
-            for emp_id, data in pending:
-                photos = data.get("training_photos", [])
-                if not photos:
-                    fs.save_retrained_encoding.__func__ if False else None  # skip
-                    continue
-                embeddings = [fe.embedding_from_base64(p) for p in photos]
-                embeddings = [e for e in embeddings if e is not None]
-                if embeddings:
-                    avg = fe.average_embeddings(embeddings)
-                    fs.save_retrained_encoding(emp_id, avg)
-                    print(f"[RETRAIN] {emp_id} — averaged {len(embeddings)} photo(s), encoding updated.")
-                else:
-                    print(f"[RETRAIN] {emp_id} — no valid face found in training photos, skipping.")
-            last_retrain = now
-            if pending:
-                refresh_employees()  # reload cache with new encodings
+            run_retraining()
         except Exception as e:
-            print(f"[WARN] Retrain check failed: {e}")
-            last_retrain = now
+            print(f"[WARN] Retraining failed: {e}")
+        last_retrain = now
 
-    # Cleanup old records every hour
     if now - last_cleanup >= CLEANUP_INTERVAL:
         try:
             fs.cleanup_old_records()
@@ -119,34 +128,58 @@ while True:
             print(f"[WARN] Cleanup failed: {e}")
         last_cleanup = now
 
-    faces = fe.detect_faces(frame)
+    # ── Detect all persons in this frame (works from any angle) ─────────────
+    persons = fe.detect_persons(frame)
 
-    for face_img, bbox in faces:
-        embedding = fe.get_embedding(face_img)
-        if embedding is None:
-            continue
+    for person_crop, bbox in persons:
 
-        emp_id, score = fe.match_face(embedding, employees, MATCH_THRESHOLD)
+        # Extract face embedding (may be None for top-angle views)
+        face_emb = fe.get_face_embedding(person_crop)
 
-        if emp_id and last_seen.get(emp_id, 0) > now - 30:
-            continue
-        if not emp_id and last_seen.get("unknown_block", 0) > now - 30:
-            continue
+        # Extract body appearance (always available as long as person is detected)
+        appearance = fe.get_body_appearance(person_crop)
 
-        temp_path = fe.save_face_temp(face_img, prefix=emp_id or "unknown")
+        # Match against known employees
+        emp_id, score, method = fe.match_person(
+            face_emb, appearance, employees,
+            face_thresh=FACE_THRESHOLD,
+            appear_thresh=APPEAR_THRESHOLD,
+        )
 
         if emp_id:
-            snapshot_url = fs.upload_snapshot(emp_id, temp_path)
+            # Known employee — debounce
+            if last_seen.get(emp_id, 0) > now - DEBOUNCE_SECONDS:
+                continue
+
+            snapshot_url = fs.upload_snapshot(emp_id, fe.save_face_temp(person_crop, emp_id))
             fs.record_attendance(emp_id, snapshot_url)
             last_seen[emp_id] = now
-            print(f"[MATCH]   {employees[emp_id]['name']} ({emp_id}) — score: {score:.2f}")
+            print(f"[MATCH]   {employees[emp_id]['name']} ({emp_id}) "
+                  f"via {method} — score: {score:.2f}")
+
         else:
-            new_id, snapshot_url = fs.create_unknown_employee(temp_path)
-            fs.update_employee_encoding(new_id, embedding)
+            # Unknown person — debounce using a position-based key
+            x, y, w, h = bbox
+            pos_key = f"unk_{x//80}_{y//80}"   # grid cell ~80px, avoids re-creating same person
+            if last_seen.get(pos_key, 0) > now - DEBOUNCE_SECONDS:
+                continue
+
+            temp_path = fe.save_face_temp(person_crop, "unknown")
+            new_id, snapshot_url = fs.create_unknown_employee(temp_path, appearance)
+
+            # Try to get face embedding for the new unknown too
+            if face_emb is not None:
+                fs.update_employee_encoding(new_id, face_emb)
+
             fs.record_attendance(new_id, snapshot_url)
-            employees[new_id] = {"name": new_id, "encoding": []}
-            last_seen["unknown_block"] = now
-            print(f"[UNKNOWN] Created {new_id} — score: {score:.2f}")
+            employees[new_id] = {
+                "name": new_id,
+                "encoding": face_emb if face_emb is not None else [],
+                "appearance": appearance if appearance is not None else [],
+            }
+            last_seen[pos_key] = now
+            method_str = "face+appearance" if face_emb is not None else "appearance only"
+            print(f"[UNKNOWN] Created {new_id} via {method_str} — score: {score:.2f}")
 
     time.sleep(FRAME_INTERVAL)
 
