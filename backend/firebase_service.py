@@ -1,17 +1,17 @@
 import os
 import numpy as np
-from datetime import datetime, date
-from firebase_admin import firestore, storage
+from datetime import datetime, date, timedelta
+from firebase_admin import firestore
 from dotenv import load_dotenv
 
 load_dotenv()
 
+GAP_MINUTES    = int(os.getenv("GAP_MINUTES", 30))       # new session if gap > 30 min
+RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", 7))     # delete records older than 7 days
+
 
 def _db():
     return firestore.client()
-
-def _bucket():
-    return storage.bucket()
 
 
 def load_all_employees():
@@ -54,36 +54,79 @@ def update_employee_encoding(emp_id, encoding: np.ndarray):
 
 
 def upload_snapshot(emp_id, local_path):
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    blob_path = f"snapshots/{emp_id}/{timestamp}.jpg"
-    blob = _bucket().blob(blob_path)
-    blob.upload_from_filename(local_path, content_type="image/jpeg")
-    blob.make_public()
-    return blob.public_url
+    """Snapshot upload is a no-op until Firebase Storage is enabled."""
+    return ""
 
 
 def record_attendance(emp_id, snapshot_url):
+    """
+    Attendance rules:
+      1. No record today → create new with in_time = out_time = now
+      2. Latest record out_time > 30 min ago → create new record (new session)
+      3. Latest record out_time within 30 min → update out_time only
+    """
     today = date.today().isoformat()
-    now = datetime.now()
-    query = (
-        _db().collection("attendance")
+    now   = datetime.now()
+    db    = _db()
+
+    # Get all of today's records for this employee, sorted by out_time desc
+    docs = list(
+        db.collection("attendance")
         .where("emp_id", "==", emp_id)
         .where("date", "==", today)
-        .limit(1)
         .stream()
     )
-    existing = list(query)
-    if not existing:
-        _db().collection("attendance").add({
-            "emp_id": emp_id,
-            "date": today,
-            "in_time": now.isoformat(),
-            "out_time": now.isoformat(),
+
+    if not docs:
+        # Rule 1 — no entry today, create fresh record
+        db.collection("attendance").add({
+            "emp_id":       emp_id,
+            "date":         today,
+            "in_time":      now.isoformat(),
+            "out_time":     now.isoformat(),
             "snapshot_url": snapshot_url,
-            "updated_at": firestore.SERVER_TIMESTAMP,
+            "updated_at":   firestore.SERVER_TIMESTAMP,
         })
+        return "created"
+
+    # Find the record with the latest out_time
+    latest = max(docs, key=lambda d: d.to_dict().get("out_time", ""))
+    latest_data = latest.to_dict()
+    last_out = datetime.fromisoformat(latest_data["out_time"])
+    gap_seconds = (now - last_out).total_seconds()
+
+    if gap_seconds > GAP_MINUTES * 60:
+        # Rule 2 — gap > 30 min → new session record
+        db.collection("attendance").add({
+            "emp_id":       emp_id,
+            "date":         today,
+            "in_time":      now.isoformat(),
+            "out_time":     now.isoformat(),
+            "snapshot_url": snapshot_url,
+            "updated_at":   firestore.SERVER_TIMESTAMP,
+        })
+        return "new_session"
     else:
-        existing[0].reference.update({
-            "out_time": now.isoformat(),
+        # Rule 3 — within 30 min → update out_time
+        latest.reference.update({
+            "out_time":   now.isoformat(),
             "updated_at": firestore.SERVER_TIMESTAMP,
         })
+        return "updated"
+
+
+def cleanup_old_records():
+    """Delete attendance records with date older than RETENTION_DAYS."""
+    cutoff = (date.today() - timedelta(days=RETENTION_DAYS)).isoformat()
+    db = _db()
+    old_docs = list(
+        db.collection("attendance")
+        .where("date", "<", cutoff)
+        .stream()
+    )
+    for doc in old_docs:
+        doc.reference.delete()
+    if old_docs:
+        print(f"[CLEANUP] Deleted {len(old_docs)} records older than {RETENTION_DAYS} days.")
+    else:
+        print(f"[CLEANUP] No old records to delete.")

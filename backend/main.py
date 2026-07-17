@@ -52,61 +52,6 @@ def upload_live_frame(frame):
     })
 
 
-def consolidate_attendance():
-    """
-    Every 2 hours: group all attendance records by emp_id + date,
-    merge into one record (first in_time, last out_time),
-    delete the originals, write one consolidated record.
-    """
-    db = _fs.client()
-    docs = list(db.collection("attendance").stream())
-
-    if not docs:
-        return
-
-    # Group by emp_id + date
-    groups = {}
-    for doc in docs:
-        data = doc.to_dict()
-        key = f"{data.get('emp_id')}_{data.get('date')}"
-        if key not in groups:
-            groups[key] = {"docs": [], "emp_id": data.get("emp_id"),
-                           "date": data.get("date"),
-                           "in_time": data.get("in_time"),
-                           "out_time": data.get("out_time"),
-                           "snapshot_url": data.get("snapshot_url", "")}
-        else:
-            # Keep earliest in_time and latest out_time
-            if data.get("in_time") and data["in_time"] < groups[key]["in_time"]:
-                groups[key]["in_time"] = data["in_time"]
-            if data.get("out_time") and data["out_time"] > groups[key]["out_time"]:
-                groups[key]["out_time"] = data["out_time"]
-        groups[key]["docs"].append(doc)
-
-    consolidated = 0
-    for key, group in groups.items():
-        if len(group["docs"]) <= 1:
-            continue  # nothing to merge
-        # Delete all individual records
-        for doc in group["docs"]:
-            doc.reference.delete()
-        # Write one merged record
-        db.collection("attendance").add({
-            "emp_id":       group["emp_id"],
-            "date":         group["date"],
-            "in_time":      group["in_time"],
-            "out_time":     group["out_time"],
-            "snapshot_url": group["snapshot_url"],
-            "consolidated": True,
-            "updated_at":   _fs.SERVER_TIMESTAMP,
-        })
-        consolidated += 1
-
-    if consolidated:
-        print(f"[CONSOLIDATE] Merged {consolidated} employee-day records.")
-    else:
-        print(f"[CONSOLIDATE] Nothing to merge.")
-
 
 def refresh_employees():
     global employees, last_refresh
@@ -140,12 +85,12 @@ while True:
         except Exception as e:
             print(f"[WARN] Live frame upload failed: {e}")
 
-    # Consolidate attendance records every 2 hours
+    # Cleanup old records every 2 hours
     if now - last_cleanup >= CLEANUP_INTERVAL:
         try:
-            consolidate_attendance()
+            fs.cleanup_old_records()
         except Exception as e:
-            print(f"[WARN] Consolidation failed: {e}")
+            print(f"[WARN] Cleanup failed: {e}")
         last_cleanup = now
 
     faces = fe.detect_faces(frame)
