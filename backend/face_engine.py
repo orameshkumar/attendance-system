@@ -18,8 +18,18 @@ import numpy as np
 from deepface import DeepFace
 from ultralytics import YOLO
 
-SNAPSHOT_DIR = "snapshots_temp"
+SNAPSHOT_DIR    = "snapshots_temp"
+MIN_MOTION_AREA = int(os.getenv("MIN_MOTION_AREA", 2500))  # px² — ignore blobs smaller than this
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+
+# ── Background subtractor (MOG2) ──────────────────────────────────────────────
+# history=200 frames, varThreshold=40 — sensitive enough to catch slow movers
+_mog2 = cv2.createBackgroundSubtractorMOG2(
+    history=200, varThreshold=40, detectShadows=False
+)
+
+# Keep previous frame for absdiff fallback
+_prev_frame: np.ndarray | None = None
 
 # ── YOLO person detector (lazy load) ─────────────────────────────────────────
 _yolo_model = None
@@ -30,6 +40,129 @@ def _yolo():
         # yolov8n.pt is downloaded automatically on first run (~6 MB)
         _yolo_model = YOLO("yolov8n.pt")
     return _yolo_model
+
+
+# ── Motion detection ──────────────────────────────────────────────────────────
+
+def _motion_mask(frame: np.ndarray) -> np.ndarray:
+    """
+    Combine MOG2 background subtraction with frame-diff for robust motion detection.
+    MOG2 catches slow movers; absdiff catches sudden fast movement.
+    Returns a binary uint8 mask (255 = motion).
+    """
+    global _prev_frame
+
+    # MOG2 foreground mask
+    mog_mask = _mog2.apply(frame)
+
+    # Frame-difference mask
+    if _prev_frame is not None:
+        diff   = cv2.absdiff(_prev_frame, frame)
+        gray   = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+        _, diff_mask = cv2.threshold(gray, 20, 255, cv2.THRESH_BINARY)
+    else:
+        diff_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+
+    _prev_frame = frame.copy()
+
+    # Union of both masks
+    combined = cv2.bitwise_or(mog_mask, diff_mask)
+
+    # Morphological cleanup: close small holes, remove isolated noise
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel, iterations=2)
+    combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN,  kernel, iterations=1)
+    combined = cv2.dilate(combined, kernel, iterations=2)
+
+    return combined
+
+
+def detect_motion_regions(frame: np.ndarray):
+    """
+    Detect moving objects by comparing against background and previous frame.
+    Merges nearby blobs into coherent bounding boxes.
+    Returns list of (crop, (x, y, w, h)) for each significant motion region.
+    """
+    mask = _motion_mask(frame)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    regions = []
+    for cnt in contours:
+        if cv2.contourArea(cnt) < MIN_MOTION_AREA:
+            continue
+        x, y, w, h = cv2.boundingRect(cnt)
+        # Clamp
+        fh, fw = frame.shape[:2]
+        x, y = max(0, x), max(0, y)
+        w, h = min(w, fw - x), min(h, fh - y)
+        if w < 20 or h < 20:
+            continue
+        crop = frame[y:y+h, x:x+w]
+        if crop.size == 0:
+            continue
+        regions.append((crop, (x, y, w, h)))
+
+    # Merge overlapping / touching regions into one bounding box
+    return _merge_overlapping(frame, regions)
+
+
+def _iou(a, b) -> float:
+    """Intersection-over-union of two (x,y,w,h) boxes."""
+    ax1, ay1, ax2, ay2 = a[0], a[1], a[0]+a[2], a[1]+a[3]
+    bx1, by1, bx2, by2 = b[0], b[1], b[0]+b[2], b[1]+b[3]
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+    if inter == 0:
+        return 0.0
+    union = a[2]*a[3] + b[2]*b[3] - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _merge_overlapping(frame, regions, iou_thresh=0.05):
+    """
+    Merge nearby / touching regions.
+    Uses a low IoU threshold (0.05) so even adjacent blobs merge.
+    """
+    boxes = [r[1] for r in regions]
+    merged = True
+    while merged:
+        merged = False
+        result = []
+        used   = [False] * len(boxes)
+        for i, a in enumerate(boxes):
+            if used[i]:
+                continue
+            x1, y1, x2, y2 = a[0], a[1], a[0]+a[2], a[1]+a[3]
+            for j, b in enumerate(boxes):
+                if i == j or used[j]:
+                    continue
+                if _iou(a, b) > iou_thresh or _boxes_close(a, b, gap=40):
+                    x1 = min(x1, b[0]);     y1 = min(y1, b[1])
+                    x2 = max(x2, b[0]+b[2]); y2 = max(y2, b[1]+b[3])
+                    used[j] = True
+                    merged = True
+            result.append((x1, y1, x2 - x1, y2 - y1))
+            used[i] = True
+        boxes = result
+
+    out = []
+    for (x, y, w, h) in boxes:
+        if w * h < MIN_MOTION_AREA:
+            continue
+        crop = frame[y:y+h, x:x+w]
+        if crop.size > 0:
+            out.append((crop, (x, y, w, h)))
+    return out
+
+
+def _boxes_close(a, b, gap=40) -> bool:
+    """Return True if two boxes are within `gap` pixels of each other."""
+    ax1, ay1, ax2, ay2 = a[0], a[1], a[0]+a[2], a[1]+a[3]
+    bx1, by1, bx2, by2 = b[0], b[1], b[0]+b[2], b[1]+b[3]
+    dx = max(0, max(ax1, bx1) - min(ax2, bx2))
+    dy = max(0, max(ay1, by1) - min(ay2, by2))
+    return dx < gap and dy < gap
 
 
 # ── Person detection ──────────────────────────────────────────────────────────
@@ -48,7 +181,6 @@ def detect_persons(frame):
             if conf < 0.40:
                 continue
             x1, y1, x2, y2 = map(int, box.xyxy[0])
-            # Clamp to frame boundaries
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(frame.shape[1], x2), min(frame.shape[0], y2)
             crop = frame[y1:y2, x1:x2]
@@ -56,6 +188,23 @@ def detect_persons(frame):
                 continue
             persons.append((crop, (x1, y1, x2 - x1, y2 - y1)))
     return persons
+
+
+def merge_detections(yolo_persons, motion_regions, overlap_thresh=0.20):
+    """
+    Combine YOLO and motion detections.
+    Any motion region NOT covered by a YOLO box is added as an extra candidate.
+    This catches people YOLO missed (partial body, unusual angle, fast movement).
+    Returns list of (crop, bbox, source) where source is 'yolo' or 'motion'.
+    """
+    candidates = [(crop, bbox, "yolo") for crop, bbox in yolo_persons]
+
+    for m_crop, m_box in motion_regions:
+        covered = any(_iou(m_box, y_box) > overlap_thresh for _, y_box, _ in candidates)
+        if not covered:
+            candidates.append((m_crop, m_box, "motion"))
+
+    return candidates
 
 
 # ── Face recognition ──────────────────────────────────────────────────────────

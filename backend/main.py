@@ -165,10 +165,21 @@ while True:
             print(f"[WARN] Cleanup failed: {e}")
         last_cleanup = now
 
-    # ── Detect all persons in this frame (works from any angle) ─────────────
-    persons = fe.detect_persons(frame)
+    # ── Detect all persons in this frame ────────────────────────────────────
+    # Layer 1: YOLO — accurate when person is clearly visible
+    yolo_persons   = fe.detect_persons(frame)
 
-    for person_crop, bbox in persons:
+    # Layer 2: Motion detection — catches anyone YOLO missed
+    #          (partial body, unusual angle, fast movement, top-angle occlusion)
+    motion_regions = fe.detect_motion_regions(frame)
+
+    # Merge: motion regions not already covered by a YOLO box become candidates
+    candidates = fe.merge_detections(yolo_persons, motion_regions)
+
+    if motion_regions and not yolo_persons:
+        print(f"[MOTION]  {len(motion_regions)} moving region(s) detected, YOLO found 0 persons — using motion fallback.")
+
+    for person_crop, bbox, source in candidates:
 
         # Extract face embedding (may be None for top-angle views)
         face_emb = fe.get_face_embedding(person_crop)
@@ -208,7 +219,7 @@ while True:
             fs.record_attendance(emp_id, snapshot_url)
             last_seen[emp_id] = now
             print(f"[MATCH]   {employees[emp_id]['name']} ({emp_id}) "
-                  f"via {method} — score: {score:.2f}")
+                  f"via {method} [{source}] — score: {score:.2f}")
 
         else:
             # Unknown person — debounce using a position-based key
@@ -232,7 +243,7 @@ while True:
             }
             last_seen[pos_key] = now
             method_str = "face+appearance" if face_emb is not None else "appearance only"
-            print(f"[UNKNOWN] Created {new_id} via {method_str} — score: {score:.2f}")
+            print(f"[UNKNOWN] Created {new_id} via {method_str} [{source}] — score: {score:.2f}")
 
     time.sleep(FRAME_INTERVAL)
 
