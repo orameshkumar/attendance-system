@@ -193,6 +193,14 @@ def _process_candidate(person_crop, bbox, source, now, frame=None):
     print(f"[DETECT]  match={'FOUND: ' + emp_id if emp_id else 'none'} "
           f"method={method} score={score:.3f}")
 
+    # Fallback: try known employees at relaxed 60% threshold before treating as unknown
+    if emp_id is None:
+        emp_id, score, method = fe.find_best_known_match(
+            face_emb, appearance, employees, min_score=0.60
+        )
+        if emp_id:
+            print(f"[DETECT]  relaxed-match FOUND: {emp_id} via {method} score={score:.3f}")
+
     if emp_id:
         if emp_id in capture_targets:
             last_cap = capture_targets.get(emp_id, 0)

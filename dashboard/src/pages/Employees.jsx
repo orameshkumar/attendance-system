@@ -351,11 +351,12 @@ export default function Employees() {
         <DetectionFrameModal
           emp={modal.emp}
           onClose={() => setModal(null)}
-          onConvert={() => setModal({ emp: modal.emp, mode: "edit" })}
+          onConvert={(cropB64) => setModal({ emp: modal.emp, mode: "edit", cropB64 })}
         />
       ) : modal ? (
         <EmployeeModal
           emp={modal.emp}
+          initialCrop={modal.cropB64 || null}
           knownEmployees={employees.filter((e) => !e.is_unknown)}
           onSave={saveEmployee}
           onMerge={mergeUnknownIntoEmployee}
@@ -386,7 +387,7 @@ function resizeImage(file, maxSize = 200) {
 }
 
 /* ── Employee / Convert modal ────────────────────────────────── */
-function EmployeeModal({ emp, knownEmployees = [], onSave, onMerge, onClose }) {
+function EmployeeModal({ emp, initialCrop = null, knownEmployees = [], onSave, onMerge, onClose }) {
   const [name,        setName]        = useState(emp.is_unknown ? "" : (emp.name || ""));
   const [empCode,     setEmpCode]     = useState(emp.emp_code || "");
   const [dept,        setDept]        = useState(emp.department || "");
@@ -397,13 +398,41 @@ function EmployeeModal({ emp, knownEmployees = [], onSave, onMerge, onClose }) {
   const [error,       setError]       = useState("");
   const [mergeMode,   setMergeMode]   = useState(false);
   const [mergeSearch, setMergeSearch] = useState("");
-  const [mergeTarget, setMergeTarget] = useState(null); // { id, name }
+  const [mergeTarget, setMergeTarget] = useState(null);
+  // Capture frames + optional crop from detection frame; selectedFrames = Set of indices to include
+  const [frameData, setFrameData] = useState(() => {
+    const frames = (emp.capture_frames || []).map((b64) => ({ b64, cropped: false }));
+    if (initialCrop) frames.unshift({ b64: initialCrop, cropped: true });
+    return frames;
+  });
+  const [selectedFrames, setSelectedFrames] = useState(() => {
+    const count = (emp.capture_frames || []).length + (initialCrop ? 1 : 0);
+    return new Set(Array.from({ length: count }, (_, i) => i));
+  });
+  const [cropTarget, setCropTarget] = useState(null); // { index, b64 }
   const fileRef = useRef();
 
   const existingPhotoCount = emp.training_photos?.length || 0;
-  const captureFrameCount  = emp.capture_frames?.length  || 0;
   const MAX_PHOTOS = 5;
   const canAddMore = photos.length + existingPhotoCount < MAX_PHOTOS;
+
+  function toggleFrame(i) {
+    setSelectedFrames((prev) => {
+      const next = new Set(prev);
+      next.has(i) ? next.delete(i) : next.add(i);
+      return next;
+    });
+  }
+
+  function handleFrameCropDone(index, croppedB64) {
+    setFrameData((prev) => {
+      const next = [...prev];
+      next[index] = { b64: croppedB64, cropped: true };
+      return next;
+    });
+    setSelectedFrames((prev) => new Set([...prev, index]));
+    setCropTarget(null);
+  }
 
   // Filter known employees by search query
   const searchResults = mergeSearch.trim().length > 0
@@ -434,11 +463,14 @@ function EmployeeModal({ emp, knownEmployees = [], onSave, onMerge, onClose }) {
   }
 
   async function handleSave() {
+    // Frames the user has selected (with any crops applied)
+    const chosenFrames = [...selectedFrames].map((i) => frameData[i].b64);
+
     if (mergeMode) {
       if (!mergeTarget) { setError("Search and select an employee to merge into"); return; }
       setSaving(true);
       try {
-        await onMerge(emp.id, mergeTarget.id, emp.capture_frames || []);
+        await onMerge(emp.id, mergeTarget.id, chosenFrames);
       } catch (err) {
         setError("Merge failed: " + err.message);
         setSaving(false);
@@ -457,14 +489,11 @@ function EmployeeModal({ emp, knownEmployees = [], onSave, onMerge, onClose }) {
         is_unknown: false,
       };
       if (!emp.is_unknown && photos.length > 0) {
-        // Editing a known employee — add photos directly (no capture frames involved)
         fields.training_photos  = arrayUnion(...photos.map((p) => p.b64));
         fields.needs_retraining = true;
       }
-      // For unknown conversion: pass uploaded photos separately so saveEmployee
-      // can combine them with capture_frames in a single arrayUnion call
       const uploadedPhotos = emp.is_unknown ? photos.map((p) => p.b64) : [];
-      await onSave(emp.id, fields, emp.is_unknown, emp.capture_frames || [], uploadedPhotos);
+      await onSave(emp.id, fields, emp.is_unknown, chosenFrames, uploadedPhotos);
     } catch (err) {
       setError("Save failed: " + err.message);
       setSaving(false);
@@ -548,7 +577,7 @@ function EmployeeModal({ emp, knownEmployees = [], onSave, onMerge, onClose }) {
                 {mergeTarget && (
                   <p className="hint" style={{ marginTop: 6, color: "#16a34a" }}>
                     ✓ Will merge into <strong>{mergeTarget.name}</strong>
-                    {captureFrameCount > 0 && ` — ${captureFrameCount} capture frame${captureFrameCount > 1 ? "s" : ""} will be added as training photos`}
+                    {frameData.length > 0 && ` — ${selectedFrames.size} of ${frameData.length} frame${frameData.length > 1 ? "s" : ""} selected for training`}
                   </p>
                 )}
                 {!mergeTarget && (
@@ -598,9 +627,51 @@ function EmployeeModal({ emp, knownEmployees = [], onSave, onMerge, onClose }) {
               <input className="input" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="e.g. +91 9876543210" />
             </div>
 
-            {captureFrameCount > 0 && (
-              <div className="hint" style={{ marginBottom: 8, padding: "8px 12px", background: "#f0fdf4", borderRadius: 8, color: "#166534" }}>
-                ✓ {captureFrameCount} captured frame{captureFrameCount > 1 ? "s" : ""} will be automatically added to training photos
+            {frameData.length > 0 && (
+              <div className="field" style={{ marginTop: 4 }}>
+                <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <span>Captured Frames
+                    <span style={{ color: "#64748b", fontWeight: 400, marginLeft: 6 }}>
+                      — select which to use, crop individual people if needed
+                    </span>
+                  </span>
+                  <span style={{ fontSize: 12, color: "#64748b" }}>
+                    {selectedFrames.size}/{frameData.length} selected
+                  </span>
+                </label>
+                <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                  <button className="btn btn-sm btn-outline" style={{ fontSize: 11 }}
+                    onClick={() => setSelectedFrames(new Set(frameData.map((_, i) => i)))}>
+                    Select all
+                  </button>
+                  <button className="btn btn-sm btn-outline" style={{ fontSize: 11 }}
+                    onClick={() => setSelectedFrames(new Set())}>
+                    None
+                  </button>
+                </div>
+                <div className="capture-grid">
+                  {frameData.map(({ b64, cropped }, i) => (
+                    <div key={i} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      <div
+                        className={`capture-slot${selectedFrames.has(i) ? " selected" : ""}`}
+                        onClick={() => toggleFrame(i)}
+                        style={{ position: "relative" }}
+                      >
+                        <img src={`data:image/jpeg;base64,${b64}`} alt={`Frame ${i + 1}`} />
+                        <div className="capture-check">{selectedFrames.has(i) ? "✓" : ""}</div>
+                        <div className="capture-label">#{i + 1}{cropped ? " ✂" : ""}</div>
+                      </div>
+                      <button
+                        className="btn btn-sm btn-outline"
+                        style={{ fontSize: 11, padding: "2px 6px", color: "#2563eb", borderColor: "#bfdbfe" }}
+                        onClick={(e) => { e.stopPropagation(); setCropTarget({ index: i, b64 }); }}
+                        title="Crop to select one person from this frame"
+                      >
+                        ✂ Select person
+                      </button>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -608,7 +679,7 @@ function EmployeeModal({ emp, knownEmployees = [], onSave, onMerge, onClose }) {
               <label>
                 Additional Training Photos
                 <span style={{ color: "#64748b", fontWeight: 400, marginLeft: 6 }}>
-                  ({existingPhotoCount + captureFrameCount + photos.length}/{MAX_PHOTOS}) — clear, front-facing photos improve recognition accuracy
+                  ({existingPhotoCount + photos.length}/{MAX_PHOTOS}) — upload extra clear, front-facing photos
                 </span>
               </label>
               <div className="photo-grid">
@@ -618,19 +689,13 @@ function EmployeeModal({ emp, knownEmployees = [], onSave, onMerge, onClose }) {
                     <span style={{ fontSize: 11 }}>{existingPhotoCount} stored</span>
                   </div>
                 )}
-                {captureFrameCount > 0 && (
-                  <div className="photo-slot existing" style={{ borderColor: "#86efac", background: "#f0fdf4" }}>
-                    <span style={{ fontSize: 20 }}>📷</span>
-                    <span style={{ fontSize: 11 }}>{captureFrameCount} captured</span>
-                  </div>
-                )}
                 {photos.map((p, i) => (
                   <div key={i} className="photo-slot">
                     <img src={p.preview} alt="" />
                     <button className="photo-remove" onClick={() => removePhoto(i)}>✕</button>
                   </div>
                 ))}
-                {canAddMore && (existingPhotoCount + captureFrameCount + photos.length < MAX_PHOTOS) && (
+                {canAddMore && (existingPhotoCount + photos.length < MAX_PHOTOS) && (
                   <div className="photo-slot add-btn" onClick={() => fileRef.current.click()}>
                     <span style={{ fontSize: 24, color: "#94a3b8" }}>＋</span>
                     <span style={{ fontSize: 11, color: "#94a3b8" }}>Add photo</span>
@@ -660,15 +725,27 @@ function EmployeeModal({ emp, knownEmployees = [], onSave, onMerge, onClose }) {
           </button>
         </div>
       </div>
+
+      {cropTarget && (
+        <FrameCropModal
+          index={cropTarget.index}
+          b64={cropTarget.b64}
+          onConfirm={handleFrameCropDone}
+          onCancel={() => setCropTarget(null)}
+        />
+      )}
     </div>
   );
 }
 
 /* ── Capture Review Modal ────────────────────────────────────── */
 function CaptureReviewModal({ emp, onClose, onTrained }) {
-  const frames = emp.capture_frames || [];
-  const [selected, setSelected] = useState(new Set());
-  const [saving,   setSaving]   = useState(false);
+  const [frameData, setFrameData] = useState(() =>
+    (emp.capture_frames || []).map((b64) => ({ b64, cropped: false }))
+  );
+  const [selected,  setSelected]  = useState(new Set());
+  const [cropTarget, setCropTarget] = useState(null); // { index, b64 }
+  const [saving,    setSaving]    = useState(false);
 
   function toggle(i) {
     setSelected((prev) => {
@@ -678,11 +755,22 @@ function CaptureReviewModal({ emp, onClose, onTrained }) {
     });
   }
 
+  function handleCropDone(index, croppedB64) {
+    setFrameData((prev) => {
+      const next = [...prev];
+      next[index] = { b64: croppedB64, cropped: true };
+      return next;
+    });
+    // Auto-select the cropped frame
+    setSelected((prev) => new Set([...prev, index]));
+    setCropTarget(null);
+  }
+
   async function handleTrain() {
     if (selected.size === 0) return;
     setSaving(true);
     try {
-      const chosen = [...selected].map((i) => frames[i]);
+      const chosen = [...selected].map((i) => frameData[i].b64);
       await updateDoc(doc(db, "employees", emp.id), {
         training_photos:  arrayUnion(...chosen),
         needs_retraining: true,
@@ -701,30 +789,43 @@ function CaptureReviewModal({ emp, onClose, onTrained }) {
       <div className="modal modal-lg" onClick={(e) => e.stopPropagation()}>
         <h2>Review Captured Frames — {emp.name}</h2>
         <p className="hint" style={{ marginBottom: 12 }}>
-          {frames.length} frames captured from the CCTV. Select the clearest ones and click Train.
+          {frameData.length} frames captured. Click a frame to select it for training, or use
+          <strong> "Select person"</strong> to crop a specific person from a multi-person frame.
         </p>
 
         <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
-          <button className="btn btn-sm btn-outline" onClick={() => setSelected(new Set(frames.map((_, i) => i)))}>Select All</button>
+          <button className="btn btn-sm btn-outline" onClick={() => setSelected(new Set(frameData.map((_, i) => i)))}>Select All</button>
           <button className="btn btn-sm btn-outline" onClick={() => setSelected(new Set())}>None</button>
-          <span style={{ fontSize: 13, color: "#64748b" }}>{selected.size} of {frames.length} selected</span>
+          <span style={{ fontSize: 13, color: "#64748b" }}>{selected.size} of {frameData.length} selected</span>
         </div>
 
         <div className="capture-grid">
-          {frames.map((b64, i) => (
-            <div
-              key={i}
-              className={`capture-slot${selected.has(i) ? " selected" : ""}`}
-              onClick={() => toggle(i)}
-            >
-              <img src={`data:image/jpeg;base64,${b64}`} alt={`Frame ${i + 1}`} />
-              <div className="capture-check">{selected.has(i) ? "✓" : ""}</div>
-              <div className="capture-label">#{i + 1}</div>
+          {frameData.map(({ b64, cropped }, i) => (
+            <div key={i} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <div
+                className={`capture-slot${selected.has(i) ? " selected" : ""}`}
+                onClick={() => toggle(i)}
+                style={{ position: "relative" }}
+              >
+                <img src={`data:image/jpeg;base64,${b64}`} alt={`Frame ${i + 1}`} />
+                <div className="capture-check">{selected.has(i) ? "✓" : ""}</div>
+                <div className="capture-label">
+                  #{i + 1}{cropped ? " ✂" : ""}
+                </div>
+              </div>
+              <button
+                className="btn btn-sm btn-outline"
+                style={{ fontSize: 11, padding: "2px 6px", color: "#2563eb", borderColor: "#bfdbfe" }}
+                onClick={(e) => { e.stopPropagation(); setCropTarget({ index: i, b64 }); }}
+                title="Crop to select one person from this frame"
+              >
+                ✂ Select person
+              </button>
             </div>
           ))}
         </div>
 
-        {frames.length === 0 && <div className="empty">No frames yet — walk past the camera to collect them.</div>}
+        {frameData.length === 0 && <div className="empty">No frames yet — walk past the camera to collect them.</div>}
 
         <div className="modal-actions">
           <button className="btn btn-outline" onClick={onClose}>Cancel</button>
@@ -733,37 +834,295 @@ function CaptureReviewModal({ emp, onClose, onTrained }) {
           </button>
         </div>
       </div>
+
+      {cropTarget && (
+        <FrameCropModal
+          index={cropTarget.index}
+          b64={cropTarget.b64}
+          onConfirm={handleCropDone}
+          onCancel={() => setCropTarget(null)}
+        />
+      )}
     </div>
   );
 }
 
-/* ── Detection Frame Modal ───────────────────────────────────── */
+/* ── Frame Crop Modal ────────────────────────────────────────── */
+function FrameCropModal({ index, b64, onConfirm, onCancel }) {
+  const canvasRef  = useRef();
+  const imgRef     = useRef();
+  const [drag,     setDrag]    = useState(null);   // { x0, y0, x1, y1 } in image coords
+  const [rect,     setRect]    = useState(null);   // confirmed selection
+  const [imgLoaded, setImgLoaded] = useState(false);
+
+  // Draw selection rectangle on canvas overlay
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const img    = imgRef.current;
+    if (!canvas || !img || !imgLoaded) return;
+    const r = canvas.getBoundingClientRect();
+    canvas.width  = r.width;
+    canvas.height = r.height;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const sel = drag || rect;
+    if (!sel) return;
+
+    const { x0, y0, x1, y1 } = normalizeRect(sel);
+    ctx.strokeStyle = "#2563eb";
+    ctx.lineWidth   = 2;
+    ctx.setLineDash([5, 3]);
+    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    ctx.fillStyle = "rgba(37,99,235,0.12)";
+    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+  }, [drag, rect, imgLoaded]);
+
+  function normalizeRect({ x0, y0, x1, y1 }) {
+    return {
+      x0: Math.min(x0, x1), y0: Math.min(y0, y1),
+      x1: Math.max(x0, x1), y1: Math.max(y0, y1),
+    };
+  }
+
+  function getPos(e) {
+    const r = canvasRef.current.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+
+  function onMouseDown(e) {
+    const p = getPos(e);
+    setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+    setRect(null);
+  }
+
+  function onMouseMove(e) {
+    if (!drag) return;
+    const p = getPos(e);
+    setDrag((d) => ({ ...d, x1: p.x, y1: p.y }));
+  }
+
+  function onMouseUp() {
+    if (!drag) return;
+    const n = normalizeRect(drag);
+    if (n.x1 - n.x0 > 10 && n.y1 - n.y0 > 10) setRect(drag);
+    setDrag(null);
+  }
+
+  function cropAndConfirm() {
+    if (!rect) return;
+    const img    = imgRef.current;
+    const canvas = canvasRef.current;
+    const br     = canvas.getBoundingClientRect();
+    const scaleX = img.naturalWidth  / br.width;
+    const scaleY = img.naturalHeight / br.height;
+    const { x0, y0, x1, y1 } = normalizeRect(rect);
+    const sx = x0 * scaleX, sy = y0 * scaleY;
+    const sw = (x1 - x0) * scaleX, sh = (y1 - y0) * scaleY;
+
+    const out = document.createElement("canvas");
+    out.width  = Math.min(sw, 200);
+    out.height = Math.round(sh * (out.width / sw));
+    out.getContext("2d").drawImage(img, sx, sy, sw, sh, 0, 0, out.width, out.height);
+    const croppedB64 = out.toDataURL("image/jpeg", 0.8).split(",")[1];
+    onConfirm(index, croppedB64);
+  }
+
+  return (
+    <div
+      className="modal-overlay"
+      style={{ zIndex: 200 }}
+      onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
+    >
+      <div className="modal modal-lg" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 640 }}>
+        <h2 style={{ marginBottom: 8 }}>Select Person — Frame #{index + 1}</h2>
+        <p className="hint" style={{ marginBottom: 12 }}>
+          Drag a box around the person you want to use for training. Then click <strong>Use crop</strong>.
+        </p>
+
+        <div style={{ position: "relative", display: "inline-block", maxWidth: "100%", cursor: "crosshair" }}>
+          <img
+            ref={imgRef}
+            src={`data:image/jpeg;base64,${b64}`}
+            alt="frame"
+            style={{ width: "100%", display: "block", borderRadius: 6, border: "1px solid #e2e8f0" }}
+            onLoad={() => setImgLoaded(true)}
+            draggable={false}
+          />
+          <canvas
+            ref={canvasRef}
+            style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%" }}
+            onMouseDown={onMouseDown}
+            onMouseMove={onMouseMove}
+            onMouseUp={onMouseUp}
+            onMouseLeave={onMouseUp}
+          />
+        </div>
+
+        {rect && (
+          <p className="hint" style={{ marginTop: 8, color: "#16a34a" }}>
+            ✓ Selection ready — click <strong>Use crop</strong> to apply
+          </p>
+        )}
+        {!rect && (
+          <p className="hint" style={{ marginTop: 8 }}>
+            Click and drag on the image to draw a selection box
+          </p>
+        )}
+
+        <div className="modal-actions">
+          <button className="btn btn-outline" onClick={onCancel}>Back</button>
+          <button className="btn btn-primary" onClick={cropAndConfirm} disabled={!rect}>
+            ✂ Use crop
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Detection Frame Modal (with inline crop selector) ───────── */
 function DetectionFrameModal({ emp, onClose, onConvert }) {
+  const canvasRef    = useRef();
+  const imgRef       = useRef();
+  const [drag,       setDrag]       = useState(null);
+  const [rect,       setRect]       = useState(null);
+  const [imgLoaded,  setImgLoaded]  = useState(false);
+  const [cropPreview, setCropPreview] = useState(null); // b64 of cropped region
+
+  const hasFame = !!emp.detection_frame;
+
+  // Redraw selection rectangle whenever drag/rect changes
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const img    = imgRef.current;
+    if (!canvas || !img || !imgLoaded) return;
+
+    // Sync canvas buffer size to its rendered size
+    const r = canvas.getBoundingClientRect();
+    canvas.width  = r.width;
+    canvas.height = r.height;
+
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const sel = drag || rect;
+    if (!sel) return;
+    const { x0, y0, x1, y1 } = normRect(sel);
+    ctx.strokeStyle = "#f59e0b";
+    ctx.lineWidth   = 2;
+    ctx.setLineDash([6, 3]);
+    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    ctx.fillStyle = "rgba(245,158,11,0.15)";
+    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+  }, [drag, rect, imgLoaded]);
+
+  function normRect({ x0, y0, x1, y1 }) {
+    return { x0: Math.min(x0,x1), y0: Math.min(y0,y1), x1: Math.max(x0,x1), y1: Math.max(y0,y1) };
+  }
+
+  function getPos(e) {
+    const r = canvasRef.current.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+
+  function onMouseDown(e) {
+    if (!hasFame) return;
+    const p = getPos(e);
+    setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+    setRect(null);
+    setCropPreview(null);
+  }
+
+  function onMouseMove(e) {
+    if (!drag) return;
+    const p = getPos(e);
+    setDrag((d) => ({ ...d, x1: p.x, y1: p.y }));
+  }
+
+  function onMouseUp() {
+    if (!drag) return;
+    const n = normRect(drag);
+    if (n.x1 - n.x0 > 10 && n.y1 - n.y0 > 10) {
+      setRect(drag);
+      // Generate crop preview
+      const img    = imgRef.current;
+      const canvas = canvasRef.current;
+      const br     = canvas.getBoundingClientRect();
+      const scaleX = img.naturalWidth  / br.width;
+      const scaleY = img.naturalHeight / br.height;
+      const { x0, y0, x1, y1 } = normRect(drag);
+      const sx = x0 * scaleX, sy = y0 * scaleY;
+      const sw = (x1 - x0) * scaleX, sh = (y1 - y0) * scaleY;
+      const out = document.createElement("canvas");
+      out.width  = Math.min(sw, 300);
+      out.height = Math.round(sh * (out.width / sw));
+      out.getContext("2d").drawImage(img, sx, sy, sw, sh, 0, 0, out.width, out.height);
+      setCropPreview(out.toDataURL("image/jpeg", 0.85).split(",")[1]);
+    }
+    setDrag(null);
+  }
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal modal-lg" onClick={(e) => e.stopPropagation()}>
         <h2>Detection Scene — {emp.id}</h2>
-        <p className="hint" style={{ marginBottom: 12 }}>
-          This is the exact frame where the system detected movement. The green box shows where in the scene the person was found.
+        <p className="hint" style={{ marginBottom: 10 }}>
+          {hasFame
+            ? <>Drag a box around the person you want to use, then click <strong>Convert</strong> or <strong>Merge</strong>.</>
+            : "No detection frame stored for this record."}
         </p>
 
-        {emp.detection_frame
-          ? <img src={`data:image/jpeg;base64,${emp.detection_frame}`} alt="detection scene"
-              style={{ width: "100%", borderRadius: 8, border: "1px solid #e2e8f0" }} />
-          : <div className="empty">No detection frame stored for this record.</div>}
-
-        {emp.face_snapshot_url && (
-          <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 10 }}>
-            <img src={emp.face_snapshot_url} alt="person crop"
-              style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 6, border: "1px solid #e2e8f0" }} />
-            <span style={{ fontSize: 12, color: "#64748b" }}>Person crop (extracted from bounding box)</span>
+        {hasFame && (
+          <div style={{ position: "relative", display: "block", cursor: "crosshair", userSelect: "none" }}>
+            <img
+              ref={imgRef}
+              src={`data:image/jpeg;base64,${emp.detection_frame}`}
+              alt="detection scene"
+              style={{ width: "100%", display: "block", borderRadius: 8, border: "1px solid #e2e8f0" }}
+              onLoad={() => setImgLoaded(true)}
+              draggable={false}
+            />
+            <canvas
+              ref={canvasRef}
+              style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", borderRadius: 8 }}
+              onMouseDown={onMouseDown}
+              onMouseMove={onMouseMove}
+              onMouseUp={onMouseUp}
+              onMouseLeave={onMouseUp}
+            />
           </div>
         )}
 
-        <div className="modal-actions">
+        {/* Crop preview + status */}
+        {cropPreview ? (
+          <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 12,
+                        padding: "10px 14px", background: "#fffbeb", borderRadius: 8, border: "1px solid #fde68a" }}>
+            <img src={`data:image/jpeg;base64,${cropPreview}`} alt="crop preview"
+              style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 6, border: "1px solid #fcd34d" }} />
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 13, color: "#92400e" }}>✓ Person selected</div>
+              <div style={{ fontSize: 12, color: "#92400e", marginTop: 2 }}>
+                This crop will be used as the training photo. Click Convert or Merge below.
+              </div>
+            </div>
+          </div>
+        ) : hasFame && (
+          <p style={{ marginTop: 8, fontSize: 12, color: "#94a3b8" }}>
+            No selection yet — drag a box around the person above
+          </p>
+        )}
+
+        <div className="modal-actions" style={{ marginTop: 16 }}>
           <button className="btn btn-outline" onClick={onClose}>Close</button>
           {emp.is_unknown && (
-            <button className="btn btn-primary" onClick={onConvert}>Convert to Employee →</button>
+            <button
+              className="btn btn-outline"
+              style={{ color: "#2563eb", borderColor: "#bfdbfe" }}
+              onClick={() => onConvert(cropPreview || null)}
+            >
+              {cropPreview ? "Convert with crop →" : "Convert (no crop) →"}
+            </button>
           )}
         </div>
       </div>

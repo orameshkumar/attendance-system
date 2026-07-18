@@ -35,7 +35,25 @@ export default function Attendance() {
     setSelected(new Set());
     const q = query(collection(db, "attendance"), where("date", "==", selectedDate));
     const snap = await getDocs(q);
-    const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const raw = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+    // Consolidate multiple sessions per employee into one row:
+    // earliest in_time → Start Time, latest out_time → End Time
+    const byEmp = {};
+    raw.forEach((r) => {
+      const key = r.emp_id;
+      if (!byEmp[key]) {
+        byEmp[key] = { ...r, _ids: [r.id] };
+      } else {
+        byEmp[key]._ids.push(r.id);
+        if (r.in_time && (!byEmp[key].in_time || r.in_time < byEmp[key].in_time))
+          byEmp[key].in_time = r.in_time;
+        if (r.out_time && (!byEmp[key].out_time || r.out_time > byEmp[key].out_time))
+          byEmp[key].out_time = r.out_time;
+      }
+    });
+
+    const rows = Object.values(byEmp);
     rows.sort((a, b) => (a.in_time > b.in_time ? 1 : -1));
     setRecords(rows);
     setLoading(false);
