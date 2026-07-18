@@ -414,15 +414,26 @@ function EmployeeModal({ emp, initialCrop = null, knownEmployees = [], onSave, o
   const [mergeMode,   setMergeMode]   = useState(false);
   const [mergeSearch, setMergeSearch] = useState("");
   const [mergeTarget, setMergeTarget] = useState(null);
+  const TRAINING_TARGET = 10;
+
   // Capture frames + optional crop from detection frame; selectedFrames = Set of indices to include
   const [frameData, setFrameData] = useState(() => {
     const frames = (emp.capture_frames || []).map((b64) => ({ b64, cropped: false }));
     if (initialCrop) frames.unshift({ b64: initialCrop, cropped: true });
+    // If no frames at all but a detection scene exists, include it so user can crop the person
+    if (frames.length === 0 && emp.detection_frame) {
+      frames.push({ b64: emp.detection_frame, cropped: false, isScene: true });
+    }
     return frames;
   });
   const [selectedFrames, setSelectedFrames] = useState(() => {
-    const count = (emp.capture_frames || []).length + (initialCrop ? 1 : 0);
-    return new Set(Array.from({ length: count }, (_, i) => i));
+    // Auto-select everything EXCEPT raw scene frames (those should be cropped first)
+    const indices = [];
+    const captureCount = (emp.capture_frames || []).length;
+    const cropOffset = initialCrop ? 1 : 0;
+    for (let i = 0; i < captureCount + cropOffset; i++) indices.push(i);
+    // Scene frame (last item when no other frames) is NOT auto-selected
+    return new Set(indices);
   });
   const [cropTarget, setCropTarget] = useState(null); // { index, b64 }
   const fileRef = useRef();
@@ -477,21 +488,30 @@ function EmployeeModal({ emp, initialCrop = null, knownEmployees = [], onSave, o
     });
   }
 
+  // Warn if scene frames are selected without cropping
+  const hasUncropped = [...selectedFrames].some((i) => frameData[i]?.isScene && !frameData[i]?.cropped);
+
   async function handleSave() {
-    // Frames the user has selected (with any crops applied)
-    const chosenFrames = [...selectedFrames].map((i) => frameData[i].b64);
+    const existingCount = emp.training_photos?.length || 0;
+
+    // Sorted indices so we take the first N slots in order
+    const sortedIndices = [...selectedFrames].sort((a, b) => a - b);
 
     if (mergeMode) {
       if (!mergeTarget) { setError("Search and select an employee to merge into"); return; }
+      const targetExisting = mergeTarget.training_photos?.length || 0;
+      const targetSlots    = Math.max(0, TRAINING_TARGET - targetExisting);
+      const mergeFrames    = sortedIndices.slice(0, targetSlots).map((i) => frameData[i].b64);
       setSaving(true);
       try {
-        await onMerge(emp.id, mergeTarget.id, chosenFrames);
+        await onMerge(emp.id, mergeTarget.id, mergeFrames);
       } catch (err) {
         setError("Merge failed: " + err.message);
         setSaving(false);
       }
       return;
     }
+
     if (!name.trim()) { setError("Name is required"); return; }
     setSaving(true);
     try {
@@ -507,7 +527,9 @@ function EmployeeModal({ emp, initialCrop = null, knownEmployees = [], onSave, o
         fields.training_photos  = arrayUnion(...photos.map((p) => p.b64));
         fields.needs_retraining = true;
       }
-      const uploadedPhotos = emp.is_unknown ? photos.map((p) => p.b64) : [];
+      const uploadedPhotos  = emp.is_unknown ? photos.map((p) => p.b64) : [];
+      const slotsAvailable  = Math.max(0, TRAINING_TARGET - existingCount - uploadedPhotos.length);
+      const chosenFrames    = sortedIndices.slice(0, slotsAvailable).map((i) => frameData[i].b64);
       await onSave(emp.id, fields, emp.is_unknown, chosenFrames, uploadedPhotos);
     } catch (err) {
       setError("Save failed: " + err.message);
@@ -644,16 +666,33 @@ function EmployeeModal({ emp, initialCrop = null, knownEmployees = [], onSave, o
 
             {frameData.length > 0 && (
               <div className="field" style={{ marginTop: 4 }}>
-                <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <span>Captured Frames
-                    <span style={{ color: "#64748b", fontWeight: 400, marginLeft: 6 }}>
-                      — select which to use, crop individual people if needed
-                    </span>
-                  </span>
-                  <span style={{ fontSize: 12, color: "#64748b" }}>
-                    {selectedFrames.size}/{frameData.length} selected
-                  </span>
-                </label>
+                {(() => {
+                  const existingCount  = emp.training_photos?.length || 0;
+                  const slotsAvailable = Math.max(0, TRAINING_TARGET - existingCount);
+                  return (
+                    <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <span>Frames for Training
+                        <span style={{ color: "#64748b", fontWeight: 400, marginLeft: 6 }}>
+                          — select which to use, crop individual people if needed
+                        </span>
+                      </span>
+                      <span style={{ fontSize: 12, color: slotsAvailable === 0 ? "#dc2626" : "#64748b" }}>
+                        {existingCount}/{TRAINING_TARGET} slots used · {slotsAvailable} available
+                      </span>
+                    </label>
+                  );
+                })()}
+                {hasUncropped && (
+                  <p className="hint" style={{ color: "#92400e", background: "#fffbeb", border: "1px solid #fde68a",
+                    borderRadius: 6, padding: "6px 10px", marginBottom: 8 }}>
+                    ⚠ Scene frame selected — please crop the person first so the AI trains on the correct person, not the whole scene.
+                  </p>
+                )}
+                {emp.training_photos?.length >= TRAINING_TARGET && (
+                  <p className="hint" style={{ color: "#dc2626", marginBottom: 8 }}>
+                    Training set is full (10/10). Frames below will not be added. Remove photos from Training Manager to free slots.
+                  </p>
+                )}
                 <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
                   <button className="btn btn-sm btn-outline" style={{ fontSize: 11 }}
                     onClick={() => setSelectedFrames(new Set(frameData.map((_, i) => i)))}>
@@ -663,18 +702,27 @@ function EmployeeModal({ emp, initialCrop = null, knownEmployees = [], onSave, o
                     onClick={() => setSelectedFrames(new Set())}>
                     None
                   </button>
+                  <span style={{ fontSize: 12, color: "#64748b", alignSelf: "center" }}>
+                    {selectedFrames.size}/{frameData.length} selected
+                  </span>
                 </div>
                 <div className="capture-grid">
-                  {frameData.map(({ b64, cropped }, i) => (
+                  {frameData.map(({ b64, cropped, isScene }, i) => (
                     <div key={i} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                       <div
                         className={`capture-slot${selectedFrames.has(i) ? " selected" : ""}`}
                         onClick={() => toggleFrame(i)}
-                        style={{ position: "relative" }}
+                        style={{
+                          position: "relative",
+                          border: isScene && !cropped ? "2px solid #f59e0b" : undefined,
+                        }}
                       >
                         <img src={`data:image/jpeg;base64,${b64}`} alt={`Frame ${i + 1}`} />
                         <div className="capture-check">{selectedFrames.has(i) ? "✓" : ""}</div>
-                        <div className="capture-label">#{i + 1}{cropped ? " ✂" : ""}</div>
+                        <div className="capture-label"
+                          style={{ background: isScene && !cropped ? "#f59e0b" : undefined }}>
+                          {isScene && !cropped ? "Scene ✂" : `#${i + 1}${cropped ? " ✂" : ""}`}
+                        </div>
                       </div>
                       <button
                         className="btn btn-sm btn-outline"
@@ -682,7 +730,7 @@ function EmployeeModal({ emp, initialCrop = null, knownEmployees = [], onSave, o
                         onClick={(e) => { e.stopPropagation(); setCropTarget({ index: i, b64 }); }}
                         title="Crop to select one person from this frame"
                       >
-                        ✂ Select person
+                        ✂ {isScene && !cropped ? "Crop person" : "Select person"}
                       </button>
                     </div>
                   ))}
