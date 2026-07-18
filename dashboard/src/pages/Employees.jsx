@@ -523,14 +523,22 @@ function EmployeeModal({ emp, initialCrop = null, knownEmployees = [], onSave, o
         phone:      phone.trim(),
         is_unknown: false,
       };
-      if (!emp.is_unknown && photos.length > 0) {
-        fields.training_photos  = arrayUnion(...photos.map((p) => p.b64));
-        fields.needs_retraining = true;
+      const uploadedPhotos = photos.map((p) => p.b64);
+      const slotsAvailable = Math.max(0, TRAINING_TARGET - existingCount);
+      const chosenFrames   = sortedIndices.slice(0, slotsAvailable).map((i) => frameData[i].b64);
+
+      if (!emp.is_unknown) {
+        // Known employee: merge cropped frames + uploaded photos into training_photos here
+        const allNew = [...chosenFrames, ...uploadedPhotos].slice(0, slotsAvailable);
+        if (allNew.length > 0) {
+          fields.training_photos  = arrayUnion(...allNew);
+          fields.needs_retraining = true;
+        }
+        await onSave(emp.id, fields, false, [], []);
+      } else {
+        // Unknown → new employee: saveEmployee handles training_photos
+        await onSave(emp.id, fields, true, chosenFrames, uploadedPhotos);
       }
-      const uploadedPhotos  = emp.is_unknown ? photos.map((p) => p.b64) : [];
-      const slotsAvailable  = Math.max(0, TRAINING_TARGET - existingCount - uploadedPhotos.length);
-      const chosenFrames    = sortedIndices.slice(0, slotsAvailable).map((i) => frameData[i].b64);
-      await onSave(emp.id, fields, emp.is_unknown, chosenFrames, uploadedPhotos);
     } catch (err) {
       setError("Save failed: " + err.message);
       setSaving(false);
