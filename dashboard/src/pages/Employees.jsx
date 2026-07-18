@@ -365,7 +365,7 @@ export default function Employees() {
       ) : modal?.mode === "detection" ? (
         <DetectionFrameModal
           emp={modal.emp}
-          onClose={() => setModal(null)}
+          onClose={() => { setModal(null); load(); }}
           onConvert={(cropB64) => setModal({ emp: modal.emp, mode: "edit", cropB64 })}
         />
       ) : modal ? (
@@ -1144,7 +1144,14 @@ function TrainingPhotosModal({ emp, onClose }) {
       <div className="modal modal-lg" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 720 }}>
         <h2 style={{ marginBottom: 4 }}>Training Photos — {emp.name}</h2>
 
-        {loading && <div className="loading" style={{ marginBottom: 12 }}>Loading training photos…</div>}
+        {/* Show only spinner until fresh data arrives — never let persist() run on stale active=[] */}
+        {loading && (
+          <div className="loading" style={{ padding: "32px 0", textAlign: "center" }}>
+            Loading training photos…
+          </div>
+        )}
+
+        {!loading && <div>
 
         {/* Status bar */}
         <div style={{ display: "flex", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
@@ -1246,6 +1253,7 @@ function TrainingPhotosModal({ emp, onClose }) {
         <div className="modal-actions">
           <button className="btn btn-primary" onClick={onClose}>Done</button>
         </div>
+        </div>}
       </div>
 
       {cropTarget && (
