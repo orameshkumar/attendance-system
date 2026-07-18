@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import {
-  collection, getDocs, doc, updateDoc, deleteDoc, arrayUnion, query, where, writeBatch,
+  collection, getDocs, getDoc, doc, updateDoc, deleteDoc, arrayUnion, query, where, writeBatch,
 } from "firebase/firestore";
 import { db } from "../firebase";
 
@@ -1061,6 +1061,22 @@ function TrainingPhotosModal({ emp, onClose }) {
   const [cropTarget, setCropTarget] = useState(null); // { index, b64, src: "active"|"ignored" }
   const [saving,     setSaving]     = useState(false);
   const [msg,        setMsg]        = useState("");
+  const [loading,    setLoading]    = useState(true);
+
+  // Always fetch fresh data on open — the emp prop may be stale if the user
+  // opens Training immediately after saving the Edit modal (load() race condition)
+  useEffect(() => {
+    setLoading(true);
+    getDoc(doc(db, "employees", emp.id))
+      .then(snap => {
+        if (snap.exists()) {
+          const d = snap.data();
+          setActive(d.training_photos         || []);
+          setIgnored(d.ignored_training_photos || []);
+        }
+      })
+      .finally(() => setLoading(false));
+  }, [emp.id]);
 
   const needsMore = active.length < TRAINING_TARGET;
   const remaining = TRAINING_TARGET - active.length;
@@ -1127,6 +1143,8 @@ function TrainingPhotosModal({ emp, onClose }) {
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal modal-lg" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 720 }}>
         <h2 style={{ marginBottom: 4 }}>Training Photos — {emp.name}</h2>
+
+        {loading && <div className="loading" style={{ marginBottom: 12 }}>Loading training photos…</div>}
 
         {/* Status bar */}
         <div style={{ display: "flex", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
