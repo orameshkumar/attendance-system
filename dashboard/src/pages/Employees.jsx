@@ -647,29 +647,29 @@ function EmployeeModal({ emp, initialCrop = null, knownEmployees = [], onSave, o
 
             <div className="field-row">
               <div className="field">
-                <label>Full Name *</label>
-                <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Ramesh Kumar" />
+                <label htmlFor="emp-name">Full Name *</label>
+                <input id="emp-name" className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Ramesh Kumar" />
               </div>
               <div className="field">
-                <label>Employee Code</label>
-                <input className="input" value={empCode} onChange={(e) => setEmpCode(e.target.value)} placeholder="e.g. EMP001" />
+                <label htmlFor="emp-code">Employee Code</label>
+                <input id="emp-code" className="input" value={empCode} onChange={(e) => setEmpCode(e.target.value)} placeholder="e.g. EMP001" />
               </div>
             </div>
 
             <div className="field-row">
               <div className="field">
-                <label>Department</label>
-                <input className="input" value={dept} onChange={(e) => setDept(e.target.value)} placeholder="e.g. Engineering" />
+                <label htmlFor="emp-dept">Department</label>
+                <input id="emp-dept" className="input" value={dept} onChange={(e) => setDept(e.target.value)} placeholder="e.g. Engineering" />
               </div>
               <div className="field">
-                <label>Email</label>
-                <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="e.g. name@company.com" />
+                <label htmlFor="emp-email">Email</label>
+                <input id="emp-email" className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="e.g. name@company.com" />
               </div>
             </div>
 
             <div className="field">
-              <label>Phone</label>
-              <input className="input" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="e.g. +91 9876543210" />
+              <label htmlFor="emp-phone">Phone</label>
+              <input id="emp-phone" className="input" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="e.g. +91 9876543210" />
             </div>
 
             {frameData.length > 0 && (
