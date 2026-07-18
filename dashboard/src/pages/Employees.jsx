@@ -1267,9 +1267,33 @@ function DetectionFrameModal({ emp, onClose, onConvert }) {
   const [drag,       setDrag]       = useState(null);
   const [rect,       setRect]       = useState(null);
   const [imgLoaded,  setImgLoaded]  = useState(false);
-  const [cropPreview, setCropPreview] = useState(null); // b64 of cropped region
+  const [cropPreview, setCropPreview] = useState(null);
+  const [saving,      setSaving]     = useState(false);
+  const [saved,       setSaved]      = useState(false);
 
-  const hasFame = !!emp.detection_frame;
+  const hasFame    = !!emp.detection_frame;
+  const isKnown    = !emp.is_unknown;
+
+  async function saveToTraining() {
+    if (!cropPreview) return;
+    setSaving(true);
+    try {
+      const existing = (await getDoc(doc(db, "employees", emp.id))).data()?.training_photos || [];
+      if (existing.length >= 10) {
+        alert("Training set is already full (10/10). Remove photos from Training Manager first.");
+        setSaving(false);
+        return;
+      }
+      await updateDoc(doc(db, "employees", emp.id), {
+        training_photos:  arrayUnion(cropPreview),
+        needs_retraining: true,
+      });
+      setSaved(true);
+    } catch (err) {
+      alert("Save failed: " + err.message);
+    }
+    setSaving(false);
+  }
 
   // Redraw selection rectangle whenever drag/rect changes
   useEffect(() => {
@@ -1348,7 +1372,9 @@ function DetectionFrameModal({ emp, onClose, onConvert }) {
         <h2>Detection Scene — {emp.id}</h2>
         <p className="hint" style={{ marginBottom: 10 }}>
           {hasFame
-            ? <>Drag a box around the person you want to use, then click <strong>Convert</strong> or <strong>Merge</strong>.</>
+            ? isKnown
+              ? <>Drag a box around the person to add a training photo.</>
+              : <>Drag a box around the person, then click <strong>Convert</strong> or <strong>Merge</strong>.</>
             : "No detection frame stored for this record."}
         </p>
 
@@ -1376,13 +1402,21 @@ function DetectionFrameModal({ emp, onClose, onConvert }) {
         {/* Crop preview + status */}
         {cropPreview ? (
           <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 12,
-                        padding: "10px 14px", background: "#fffbeb", borderRadius: 8, border: "1px solid #fde68a" }}>
+                        padding: "10px 14px", background: saved ? "#f0fdf4" : "#fffbeb",
+                        borderRadius: 8, border: `1px solid ${saved ? "#bbf7d0" : "#fde68a"}` }}>
             <img src={`data:image/jpeg;base64,${cropPreview}`} alt="crop preview"
-              style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 6, border: "1px solid #fcd34d" }} />
+              style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 6,
+                       border: `1px solid ${saved ? "#86efac" : "#fcd34d"}` }} />
             <div>
-              <div style={{ fontWeight: 600, fontSize: 13, color: "#92400e" }}>✓ Person selected</div>
-              <div style={{ fontSize: 12, color: "#92400e", marginTop: 2 }}>
-                This crop will be used as the training photo. Click Convert or Merge below.
+              <div style={{ fontWeight: 600, fontSize: 13, color: saved ? "#166534" : "#92400e" }}>
+                {saved ? "✓ Saved to training photos" : "✓ Person selected"}
+              </div>
+              <div style={{ fontSize: 12, color: saved ? "#166534" : "#92400e", marginTop: 2 }}>
+                {saved
+                  ? "This photo has been added. Backend will retrain recognition automatically."
+                  : isKnown
+                    ? "Click Save to Training to add this crop to the employee's training set."
+                    : "Click Convert or Merge below to create or update the employee record."}
               </div>
             </div>
           </div>
@@ -1393,7 +1427,16 @@ function DetectionFrameModal({ emp, onClose, onConvert }) {
         )}
 
         <div className="modal-actions" style={{ marginTop: 16 }}>
-          <button className="btn btn-outline" onClick={onClose}>Close</button>
+          <button className="btn btn-outline" onClick={onClose}>{saved ? "Done" : "Close"}</button>
+          {isKnown && cropPreview && !saved && (
+            <button
+              className="btn btn-primary"
+              onClick={saveToTraining}
+              disabled={saving}
+            >
+              {saving ? "Saving…" : "Save to Training"}
+            </button>
+          )}
           {emp.is_unknown && (
             <button
               className="btn btn-outline"
