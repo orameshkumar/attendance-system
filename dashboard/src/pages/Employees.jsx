@@ -298,6 +298,16 @@ export default function Employees() {
                             {e.is_unknown ? "Convert" : "Edit"}
                           </button>
                         )}
+                        {!e.is_unknown && !e.is_ignored && (
+                          <button
+                            className="btn btn-sm btn-outline"
+                            style={{ color: "#7c3aed", borderColor: "#ddd6fe" }}
+                            onClick={() => setModal({ emp: e, mode: "training" })}
+                            title="Manage training photos"
+                          >
+                            📸 Training
+                          </button>
+                        )}
                         <button
                           className="btn btn-sm btn-outline"
                           style={e.is_ignored
@@ -341,7 +351,12 @@ export default function Employees() {
         )}
       </div>
 
-      {modal?.mode === "review" ? (
+      {modal?.mode === "training" ? (
+        <TrainingPhotosModal
+          emp={modal.emp}
+          onClose={() => { setModal(null); load(); }}
+        />
+      ) : modal?.mode === "review" ? (
         <CaptureReviewModal
           emp={modal.emp}
           onClose={() => setModal(null)}
@@ -977,6 +992,196 @@ function FrameCropModal({ index, b64, onConfirm, onCancel }) {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ── Training Photos Manager ─────────────────────────────────── */
+const TRAINING_TARGET = 10;
+
+function TrainingPhotosModal({ emp, onClose }) {
+  const [active,     setActive]     = useState(emp.training_photos        || []);
+  const [ignored,    setIgnored]    = useState(emp.ignored_training_photos || []);
+  const [cropTarget, setCropTarget] = useState(null); // { index, b64, src: "active"|"ignored" }
+  const [saving,     setSaving]     = useState(false);
+  const [msg,        setMsg]        = useState("");
+
+  const needsMore = active.length < TRAINING_TARGET;
+  const remaining = TRAINING_TARGET - active.length;
+
+  async function persist(newActive, newIgnored, opts = {}) {
+    setSaving(true);
+    setMsg("");
+    try {
+      const update = {
+        training_photos:         newActive,
+        ignored_training_photos: newIgnored,
+        needs_retraining:        newActive.length > 0,
+      };
+      // Trigger fresh capture if below target
+      if (newActive.length < TRAINING_TARGET) {
+        update.needs_capture = true;
+        update.capture_ready = false;
+      }
+      if (opts.msg) setMsg(opts.msg);
+      await updateDoc(doc(db, "employees", emp.id), update);
+    } catch (e) {
+      setMsg("Save failed: " + e.message);
+    }
+    setSaving(false);
+  }
+
+  async function ignorePhoto(index) {
+    const b64       = active[index];
+    const newActive  = active.filter((_, i) => i !== index);
+    const newIgnored = [...ignored, b64];
+    setActive(newActive);
+    setIgnored(newIgnored);
+    await persist(newActive, newIgnored, { msg: "Photo ignored. " + (newActive.length < TRAINING_TARGET ? `System will capture ${TRAINING_TARGET - newActive.length} more frame(s).` : "") });
+  }
+
+  async function restorePhoto(index) {
+    const b64       = ignored[index];
+    const newIgnored = ignored.filter((_, i) => i !== index);
+    const newActive  = [...active, b64];
+    setActive(newActive);
+    setIgnored(newIgnored);
+    await persist(newActive, newIgnored, { msg: "Photo restored to training set." });
+  }
+
+  function handleCropDone(index, croppedB64) {
+    const src = cropTarget.src;
+    let newActive  = [...active];
+    let newIgnored = [...ignored];
+
+    if (src === "active") {
+      newActive[index] = croppedB64;
+    } else {
+      // Cropped from ignored — move to active
+      newIgnored = newIgnored.filter((_, i) => i !== index);
+      newActive  = [...newActive, croppedB64];
+    }
+    setActive(newActive);
+    setIgnored(newIgnored);
+    setCropTarget(null);
+    persist(newActive, newIgnored, { msg: "Cropped photo saved to training set." });
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal modal-lg" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 720 }}>
+        <h2 style={{ marginBottom: 4 }}>Training Photos — {emp.name}</h2>
+
+        {/* Status bar */}
+        <div style={{ display: "flex", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 13, background: "#f0fdf4", color: "#166534", borderRadius: 6, padding: "3px 10px", border: "1px solid #bbf7d0" }}>
+            ✓ {active.length} active
+          </span>
+          {ignored.length > 0 && (
+            <span style={{ fontSize: 13, background: "#fef2f2", color: "#991b1b", borderRadius: 6, padding: "3px 10px", border: "1px solid #fecaca" }}>
+              ✕ {ignored.length} ignored
+            </span>
+          )}
+          <span style={{ fontSize: 13, background: "#f8fafc", color: "#64748b", borderRadius: 6, padding: "3px 10px", border: "1px solid #e2e8f0" }}>
+            Target: {TRAINING_TARGET} frames
+          </span>
+          {needsMore && (
+            <span style={{ fontSize: 13, background: "#fffbeb", color: "#92400e", borderRadius: 6, padding: "3px 10px", border: "1px solid #fde68a" }}>
+              📷 Capturing {remaining} more frame{remaining !== 1 ? "s" : ""} automatically
+            </span>
+          )}
+        </div>
+
+        {msg && (
+          <div style={{ marginBottom: 12, padding: "8px 12px", background: "#f0fdf4", borderRadius: 8,
+                        fontSize: 13, color: "#166534", border: "1px solid #bbf7d0" }}>
+            {msg}
+          </div>
+        )}
+
+        {/* Active photos */}
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, color: "#1e293b" }}>
+            Active Training Photos ({active.length})
+          </div>
+          {active.length === 0 ? (
+            <div className="empty" style={{ padding: "20px 0" }}>No active training photos yet.</div>
+          ) : (
+            <div className="capture-grid">
+              {active.map((b64, i) => (
+                <div key={i} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <div className="capture-slot" style={{ position: "relative" }}>
+                    <img src={`data:image/jpeg;base64,${b64}`} alt={`Photo ${i + 1}`} />
+                    <div className="capture-label">#{i + 1}</div>
+                  </div>
+                  <button
+                    className="btn btn-sm btn-outline"
+                    style={{ fontSize: 11, padding: "2px 6px", color: "#2563eb", borderColor: "#bfdbfe" }}
+                    onClick={() => setCropTarget({ index: i, b64, src: "active" })}
+                  >
+                    ✂ Crop
+                  </button>
+                  <button
+                    className="btn btn-sm btn-outline"
+                    style={{ fontSize: 11, padding: "2px 6px", color: "#dc2626", borderColor: "#fca5a5" }}
+                    onClick={() => ignorePhoto(i)}
+                    disabled={saving}
+                  >
+                    Ignore
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Ignored photos */}
+        {ignored.length > 0 && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, color: "#64748b" }}>
+              Ignored Photos ({ignored.length}) — not used for training
+            </div>
+            <div className="capture-grid">
+              {ignored.map((b64, i) => (
+                <div key={i} style={{ display: "flex", flexDirection: "column", gap: 4, opacity: 0.6 }}>
+                  <div className="capture-slot" style={{ position: "relative", border: "2px solid #fca5a5" }}>
+                    <img src={`data:image/jpeg;base64,${b64}`} alt={`Ignored ${i + 1}`} />
+                    <div className="capture-label" style={{ background: "#dc2626" }}>✕</div>
+                  </div>
+                  <button
+                    className="btn btn-sm btn-outline"
+                    style={{ fontSize: 11, padding: "2px 6px", color: "#2563eb", borderColor: "#bfdbfe" }}
+                    onClick={() => setCropTarget({ index: i, b64, src: "ignored" })}
+                  >
+                    ✂ Crop & restore
+                  </button>
+                  <button
+                    className="btn btn-sm btn-outline"
+                    style={{ fontSize: 11, padding: "2px 6px", color: "#16a34a", borderColor: "#86efac" }}
+                    onClick={() => restorePhoto(i)}
+                    disabled={saving}
+                  >
+                    Restore
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="modal-actions">
+          <button className="btn btn-primary" onClick={onClose}>Done</button>
+        </div>
+      </div>
+
+      {cropTarget && (
+        <FrameCropModal
+          index={cropTarget.index}
+          b64={cropTarget.b64}
+          onConfirm={handleCropDone}
+          onCancel={() => setCropTarget(null)}
+        />
+      )}
     </div>
   );
 }

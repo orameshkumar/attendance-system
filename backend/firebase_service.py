@@ -177,10 +177,11 @@ def get_employees_needing_retraining():
 
 
 def save_retrained_encoding(emp_id: str, encoding, appearance=None):
+    # Keep training_photos intact so the frontend Training Manager can show them.
+    # Only clear the capture_frames queue (raw unreviewed frames) after training.
     update = {
         "face_encoding":    encoding.tolist() if encoding is not None else [],
         "needs_retraining": False,
-        "training_photos":  [],
         "retrained_at":     firestore.SERVER_TIMESTAMP,
     }
     if appearance is not None:
