@@ -32,7 +32,7 @@ export default function Employees() {
   async function load() {
     setLoading(true);
     const [empSnap, attSnap] = await Promise.all([
-      getDocs(collection(db, "employees")),
+      getDocs(collection(db, "employees")), // filter deleted in-memory below
       getDocs(query(
         collection(db, "attendance"),
         where("date", "==", new Date().toISOString().slice(0, 10))
@@ -41,7 +41,7 @@ export default function Employees() {
 
     const list = empSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
     list.sort((a, b) => (a.is_unknown ? 1 : -1));
-    setEmployees(list);
+    setEmployees(list); // includes deleted:true — filtered per-view below
 
     // Build attendance map: keep earliest in_time and latest out_time per employee
     const attMap = {};
@@ -123,26 +123,36 @@ export default function Employees() {
 
   async function handleDelete(ids) {
     const arr = ids instanceof Set ? [...ids] : ids;
-    if (!window.confirm(`Delete ${arr.length} employee record(s)? This cannot be undone.`)) return;
+    if (!window.confirm(`Move ${arr.length} record(s) to Deleted? You can restore them from the Deleted tab.`)) return;
     setDeleting(true);
-    await Promise.all(arr.map((id) => deleteDoc(doc(db, "employees", id))));
+    await Promise.all(arr.map((id) => updateDoc(doc(db, "employees", id), { deleted: true })));
     setDeleting(false);
     setSelected(new Set());
     load();
   }
 
-  const filtered = employees.filter((e) => {
+  async function handleRestore(id) {
+    await updateDoc(doc(db, "employees", id), { deleted: false });
+    load();
+  }
+
+  // Active employees (not soft-deleted)
+  const active = employees.filter((e) => !e.deleted);
+  const deletedList = employees.filter((e) => e.deleted);
+
+  const filtered = active.filter((e) => {
     if (filter === "unknown")  return e.is_unknown && !e.is_ignored;
     if (filter === "known")    return !e.is_unknown && !e.is_ignored;
     if (filter === "ignored")  return e.is_ignored;
+    if (filter === "deleted")  return false; // handled separately below
     return !e.is_ignored; // "all" hides ignored by default
   });
 
-  const unknownCount = employees.filter((e) => e.is_unknown  && !e.is_ignored).length;
-  const ignoredCount = employees.filter((e) => e.is_ignored).length;
-  const retrainCount = employees.filter((e) => e.needs_retraining).length;
-  const captureCount = employees.filter((e) => e.needs_capture).length;
-  const reviewCount  = employees.filter((e) => e.capture_ready).length;
+  const unknownCount = active.filter((e) => e.is_unknown  && !e.is_ignored).length;
+  const ignoredCount = active.filter((e) => e.is_ignored).length;
+  const retrainCount = active.filter((e) => e.needs_retraining).length;
+  const captureCount = active.filter((e) => e.needs_capture).length;
+  const reviewCount  = active.filter((e) => e.capture_ready).length;
   const filteredIds  = filtered.map((e) => e.id);
   const allSelected  = filteredIds.length > 0 && selected.size === filteredIds.length;
 
@@ -156,11 +166,11 @@ export default function Employees() {
       <div className="stats-row">
         <div className="stat-card blue">
           <div className="label">Total</div>
-          <div className="value">{employees.length}</div>
+          <div className="value">{active.length}</div>
         </div>
         <div className="stat-card green">
           <div className="label">Known</div>
-          <div className="value">{employees.length - unknownCount}</div>
+          <div className="value">{active.length - unknownCount}</div>
         </div>
         <div className="stat-card orange">
           <div className="label">Unknown</div>
@@ -191,29 +201,84 @@ export default function Employees() {
             { key: "known",   label: "Known" },
             { key: "unknown", label: "Unknown" },
             { key: "ignored", label: `Ignored${ignoredCount > 0 ? ` (${ignoredCount})` : ""}` },
+            { key: "deleted", label: `Deleted${deletedList.length > 0 ? ` (${deletedList.length})` : ""}` },
           ].map(({ key, label }) => (
             <button
               key={key}
-              className={`btn btn-sm ${filter === key ? "btn-primary" : "btn-outline"}`}
+              className={`btn btn-sm ${filter === key ? (key === "deleted" ? "" : "btn-primary") : "btn-outline"}`}
+              style={filter === key && key === "deleted" ? { background: "#dc2626", color: "#fff" } : {}}
               onClick={() => { setFilter(key); setSelected(new Set()); }}
             >
               {label}
             </button>
           ))}
-          {selected.size > 0 && (
+          {selected.size > 0 && filter !== "deleted" && (
             <button
-              className="btn btn-sm"
-              style={{ background: "#dc2626", color: "#fff", marginLeft: "auto" }}
+              className="btn btn-sm btn-outline"
+              style={{ color: "#dc2626", borderColor: "#fca5a5", marginLeft: "auto" }}
               onClick={() => handleDelete(selected)}
               disabled={deleting}
             >
-              {deleting ? "Deleting…" : `Delete ${selected.size} selected`}
+              {deleting ? "Moving…" : `Delete ${selected.size} selected`}
             </button>
           )}
         </div>
 
         {loading ? (
           <div className="loading">Loading…</div>
+        ) : filter === "deleted" ? (
+          deletedList.length === 0 ? (
+            <div className="empty">No deleted employees.</div>
+          ) : (
+            <div>
+              <p className="hint" style={{ marginBottom: 12 }}>
+                These records were deleted. Click <strong>Restore</strong> to bring them back.
+              </p>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Photo</th>
+                      <th>ID</th>
+                      <th>Name</th>
+                      <th>Status</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {deletedList.map((e) => {
+                      const photo = latestPhoto(e);
+                      return (
+                        <tr key={e.id} style={{ opacity: 0.7 }}>
+                          <td>
+                            {photo
+                              ? <img className="avatar" src={`data:image/jpeg;base64,${photo}`} alt="" />
+                              : <div className="avatar" />}
+                          </td>
+                          <td style={{ fontFamily: "monospace", fontSize: 12 }}>{e.id}</td>
+                          <td>{e.name || <em style={{ color: "#94a3b8" }}>Unknown</em>}</td>
+                          <td>
+                            <span className={`badge ${e.is_unknown ? "unknown" : "present"}`}>
+                              {e.is_unknown ? "Unknown" : "Known"}
+                            </span>
+                          </td>
+                          <td>
+                            <button
+                              className="btn btn-sm btn-outline"
+                              style={{ color: "#16a34a", borderColor: "#86efac" }}
+                              onClick={() => handleRestore(e.id)}
+                            >
+                              Restore
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )
         ) : filtered.length === 0 ? (
           <div className="empty">No employees found.</div>
         ) : (
@@ -338,8 +403,8 @@ export default function Employees() {
                           <button
                             className="btn btn-sm btn-outline"
                             style={{ color: "#dc2626", borderColor: "#fca5a5" }}
-                            onClick={() => handleDelete([e.id])}
-                            title="Delete unknown detection"
+                            onClick={() => updateDoc(doc(db, "employees", e.id), { deleted: true }).then(load)}
+                            title="Remove unknown detection (can restore from Deleted tab)"
                           >
                             ✕
                           </button>
@@ -793,8 +858,8 @@ function EmployeeModal({ emp, initialCrop = null, knownEmployees = [], onSave, o
               style={{ color: "#dc2626", borderColor: "#fca5a5", marginRight: "auto" }}
               disabled={saving}
               onClick={async () => {
-                if (!window.confirm(`Permanently delete ${emp.name}? This cannot be undone.`)) return;
-                await deleteDoc(doc(db, "employees", emp.id));
+                if (!window.confirm(`Move ${emp.name} to Deleted? You can restore them from the Deleted tab.`)) return;
+                await updateDoc(doc(db, "employees", emp.id), { deleted: true });
                 onClose();
               }}
             >
