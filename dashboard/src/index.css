@@ -196,7 +196,8 @@ tbody tr:hover { background: #f8fafc; }
   padding: 24px;
   width: 100%;
   max-width: 400px;
-  margin: auto;
+  margin: 0 auto;
+  align-self: flex-start;
 }
 .modal h2 { font-size: 17px; font-weight: 700; margin-bottom: 16px; }
 .modal .field { margin-bottom: 12px; }
