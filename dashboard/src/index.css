@@ -185,9 +185,10 @@ tbody tr:hover { background: #f8fafc; }
 .modal-overlay {
   position: fixed; inset: 0;
   background: rgba(0,0,0,0.4);
-  display: flex; align-items: center; justify-content: center;
+  display: flex; align-items: flex-start; justify-content: center;
   z-index: 200;
-  padding: 16px;
+  padding: 24px 16px;
+  overflow-y: auto;
 }
 .modal {
   background: #fff;
@@ -195,6 +196,7 @@ tbody tr:hover { background: #f8fafc; }
   padding: 24px;
   width: 100%;
   max-width: 400px;
+  margin: auto;
 }
 .modal h2 { font-size: 17px; font-weight: 700; margin-bottom: 16px; }
 .modal .field { margin-bottom: 12px; }
@@ -365,6 +367,31 @@ tbody tr:hover { background: #f8fafc; }
   /* Toolbar stacks nicely */
   .toolbar { gap: 8px; }
   .toolbar .input { flex: 1; min-width: 120px; }
+
+  /* Compact table cells on mobile */
+  thead th { padding: 8px 8px; font-size: 10px; }
+  tbody td  { padding: 9px 8px; }
+
+  /* Smaller action buttons in table */
+  .btn-sm { padding: 4px 8px; font-size: 11px; }
+
+  /* Hide low-priority columns on mobile */
+  .col-hide-mobile { display: none; }
+
+  /* Sticky action column — always visible at right edge */
+  .col-action-sticky {
+    position: sticky;
+    right: 0;
+    background: #fff;
+    box-shadow: -3px 0 6px rgba(0,0,0,0.06);
+    z-index: 1;
+  }
+  tr:hover .col-action-sticky { background: #f8fafc; }
+  tr.row-selected .col-action-sticky { background: #eff6ff; }
+
+  /* Modal full-width on small screens */
+  .modal { padding: 16px; border-radius: 10px; }
+  .modal-overlay { padding: 12px 10px; }
 }
 
 @media (max-width: 400px) {

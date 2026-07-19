@@ -180,8 +180,8 @@ export default function Attendance() {
                   <th>Status</th>
                   <th>Start Time</th>
                   <th>End Time</th>
-                  <th>Duration</th>
-                  <th style={{ width: 60 }}></th>
+                  <th className="col-hide-mobile">Duration</th>
+                  <th className="col-action-sticky" style={{ width: 60 }}></th>
                 </tr>
               </thead>
               <tbody>
@@ -221,8 +221,8 @@ export default function Attendance() {
                       </td>
                       <td>{fmt(r.in_time)}</td>
                       <td>{fmt(r.out_time)}</td>
-                      <td>{duration(r.in_time, r.out_time)}</td>
-                      <td>
+                      <td className="col-hide-mobile">{duration(r.in_time, r.out_time)}</td>
+                      <td className="col-action-sticky">
                         <button
                           className="btn btn-sm btn-outline"
                           style={{ color: "#dc2626", borderColor: "#fca5a5" }}

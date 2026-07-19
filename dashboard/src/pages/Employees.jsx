@@ -230,14 +230,14 @@ export default function Employees() {
                     />
                   </th>
                   <th>Photo</th>
-                  <th>Detection</th>
+                  <th className="col-hide-mobile">Detection</th>
                   <th>ID</th>
                   <th>Name</th>
-                  <th>Department</th>
+                  <th className="col-hide-mobile">Department</th>
                   <th>Status</th>
-                  <th>Start Time</th>
-                  <th>End Time</th>
-                  <th>Action</th>
+                  <th className="col-hide-mobile">Start Time</th>
+                  <th className="col-hide-mobile">End Time</th>
+                  <th className="col-action-sticky">Action</th>
                   <th style={{ width: 44 }}></th>
                 </tr>
               </thead>
@@ -260,7 +260,7 @@ export default function Employees() {
                           ? <img className="avatar" src={`data:image/jpeg;base64,${photo}`} alt="" />
                           : <div className="avatar" />}
                       </td>
-                      <td>
+                      <td className="col-hide-mobile">
                         {e.detection_frame
                           ? (
                             <img
@@ -273,14 +273,14 @@ export default function Employees() {
                           )
                           : <span style={{ color: "#cbd5e1", fontSize: 11 }}>—</span>}
                       </td>
-                      <td style={{ fontFamily: "monospace", fontSize: 12 }}>{e.id}</td>
+                      <td style={{ fontFamily: "monospace", fontSize: 12, maxWidth: 90, overflow: "hidden", textOverflow: "ellipsis" }}>{e.id}</td>
                       <td>
                         {e.name}
                         {e.needs_retraining && (
                           <span style={{ marginLeft: 6, fontSize: 10, color: "#d97706" }}>⚙️</span>
                         )}
                       </td>
-                      <td>{e.department || "—"}</td>
+                      <td className="col-hide-mobile">{e.department || "—"}</td>
                       <td>
                         {e.is_ignored
                           ? <span className="badge absent">Ignored</span>
@@ -288,9 +288,9 @@ export default function Employees() {
                               {e.is_unknown ? "Unknown" : "Known"}
                             </span>}
                       </td>
-                      <td style={{ fontSize: 13 }}>{att ? fmtTime(att.in_time) : "—"}</td>
-                      <td style={{ fontSize: 13 }}>{att ? fmtTime(att.out_time) : "—"}</td>
-                      <td style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      <td className="col-hide-mobile" style={{ fontSize: 13 }}>{att ? fmtTime(att.in_time) : "—"}</td>
+                      <td className="col-hide-mobile" style={{ fontSize: 13 }}>{att ? fmtTime(att.out_time) : "—"}</td>
+                      <td className="col-action-sticky" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                         <button
                           className="btn btn-sm btn-outline"
                           onClick={() => setModal({ emp: e, mode: "edit" })}
