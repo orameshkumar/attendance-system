@@ -33,7 +33,8 @@ export default function FrameCropModal({ index, b64, onConfirm, onCancel }) {
 
   function getPos(e) {
     const r = canvasRef.current.getBoundingClientRect();
-    return { x: e.clientX - r.left, y: e.clientY - r.top };
+    const src = e.touches ? e.touches[0] || e.changedTouches[0] : e;
+    return { x: src.clientX - r.left, y: src.clientY - r.top };
   }
 
   function onMouseDown(e) {
@@ -49,6 +50,28 @@ export default function FrameCropModal({ index, b64, onConfirm, onCancel }) {
   }
 
   function onMouseUp() {
+    if (!drag) return;
+    const n = normalize(drag);
+    if (n.x1 - n.x0 > 10 && n.y1 - n.y0 > 10) setRect(drag);
+    setDrag(null);
+  }
+
+  function onTouchStart(e) {
+    e.preventDefault();
+    const p = getPos(e);
+    setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+    setRect(null);
+  }
+
+  function onTouchMove(e) {
+    e.preventDefault();
+    if (!drag) return;
+    const p = getPos(e);
+    setDrag((d) => ({ ...d, x1: p.x, y1: p.y }));
+  }
+
+  function onTouchEnd(e) {
+    e.preventDefault();
     if (!drag) return;
     const n = normalize(drag);
     if (n.x1 - n.x0 > 10 && n.y1 - n.y0 > 10) setRect(drag);
@@ -94,11 +117,14 @@ export default function FrameCropModal({ index, b64, onConfirm, onCancel }) {
           />
           <canvas
             ref={canvasRef}
-            style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%" }}
+            style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", touchAction: "none" }}
             onMouseDown={onMouseDown}
             onMouseMove={onMouseMove}
             onMouseUp={onMouseUp}
             onMouseLeave={onMouseUp}
+            onTouchStart={onTouchStart}
+            onTouchMove={onTouchMove}
+            onTouchEnd={onTouchEnd}
           />
         </div>
         {rect

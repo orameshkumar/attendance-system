@@ -1219,7 +1219,29 @@ function DetectionFrameModal({ emp, onClose, onConvert }) {
 
   function getPos(e) {
     const r = canvasRef.current.getBoundingClientRect();
-    return { x: e.clientX - r.left, y: e.clientY - r.top };
+    const src = e.touches ? e.touches[0] || e.changedTouches[0] : e;
+    return { x: src.clientX - r.left, y: src.clientY - r.top };
+  }
+
+  function finishDrag(dragState) {
+    const n = normRect(dragState);
+    if (n.x1 - n.x0 > 10 && n.y1 - n.y0 > 10) {
+      setRect(dragState);
+      const img    = imgRef.current;
+      const canvas = canvasRef.current;
+      const br     = canvas.getBoundingClientRect();
+      const scaleX = img.naturalWidth  / br.width;
+      const scaleY = img.naturalHeight / br.height;
+      const { x0, y0, x1, y1 } = normRect(dragState);
+      const sx = x0 * scaleX, sy = y0 * scaleY;
+      const sw = (x1 - x0) * scaleX, sh = (y1 - y0) * scaleY;
+      const out = document.createElement("canvas");
+      out.width  = Math.min(sw, 300);
+      out.height = Math.round(sh * (out.width / sw));
+      out.getContext("2d").drawImage(img, sx, sy, sw, sh, 0, 0, out.width, out.height);
+      setCropPreview(out.toDataURL("image/jpeg", 0.85).split(",")[1]);
+    }
+    setDrag(null);
   }
 
   function onMouseDown(e) {
@@ -1238,25 +1260,29 @@ function DetectionFrameModal({ emp, onClose, onConvert }) {
 
   function onMouseUp() {
     if (!drag) return;
-    const n = normRect(drag);
-    if (n.x1 - n.x0 > 10 && n.y1 - n.y0 > 10) {
-      setRect(drag);
-      // Generate crop preview
-      const img    = imgRef.current;
-      const canvas = canvasRef.current;
-      const br     = canvas.getBoundingClientRect();
-      const scaleX = img.naturalWidth  / br.width;
-      const scaleY = img.naturalHeight / br.height;
-      const { x0, y0, x1, y1 } = normRect(drag);
-      const sx = x0 * scaleX, sy = y0 * scaleY;
-      const sw = (x1 - x0) * scaleX, sh = (y1 - y0) * scaleY;
-      const out = document.createElement("canvas");
-      out.width  = Math.min(sw, 300);
-      out.height = Math.round(sh * (out.width / sw));
-      out.getContext("2d").drawImage(img, sx, sy, sw, sh, 0, 0, out.width, out.height);
-      setCropPreview(out.toDataURL("image/jpeg", 0.85).split(",")[1]);
-    }
-    setDrag(null);
+    finishDrag(drag);
+  }
+
+  function onTouchStart(e) {
+    if (!hasFame) return;
+    e.preventDefault();
+    const p = getPos(e);
+    setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+    setRect(null);
+    setCropPreview(null);
+  }
+
+  function onTouchMove(e) {
+    e.preventDefault();
+    if (!drag) return;
+    const p = getPos(e);
+    setDrag((d) => ({ ...d, x1: p.x, y1: p.y }));
+  }
+
+  function onTouchEnd(e) {
+    e.preventDefault();
+    if (!drag) return;
+    finishDrag(drag);
   }
 
   return (
@@ -1283,11 +1309,14 @@ function DetectionFrameModal({ emp, onClose, onConvert }) {
             />
             <canvas
               ref={canvasRef}
-              style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", borderRadius: 8 }}
+              style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", borderRadius: 8, touchAction: "none" }}
               onMouseDown={onMouseDown}
               onMouseMove={onMouseMove}
               onMouseUp={onMouseUp}
               onMouseLeave={onMouseUp}
+              onTouchStart={onTouchStart}
+              onTouchMove={onTouchMove}
+              onTouchEnd={onTouchEnd}
             />
           </div>
         )}

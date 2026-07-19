@@ -274,27 +274,40 @@ function QuickConvertModal({ emp, allEmployees, onClose }) {
     if (mode === "new" && !name.trim()) { setError("Name is required."); return; }
     if (mode === "merge" && !mergeTarget) { setError("Select an employee to merge into."); return; }
     setSaving(true);
+    // Use cropped image if available, otherwise fall back to the raw detection frame
+    const photoToAdd = cropB64 || detectionFrame;
     try {
       if (mode === "new") {
-        const fields = { name: name.trim(), department: dept.trim(), is_unknown: false };
-        if (cropB64) {
+        const fields = {
+          name: name.trim(),
+          department: dept.trim(),
+          is_unknown: false,
+          needs_capture: true,   // trigger backend to collect more training frames
+          capture_ready: false,
+          capture_frames: [],
+        };
+        if (photoToAdd) {
           const existing = (await getDoc(doc(db, "employees", emp.id))).data()?.training_photos || [];
           if (existing.length < TRAINING_TARGET) {
-            fields.training_photos  = arrayUnion(cropB64);
+            fields.training_photos  = arrayUnion(photoToAdd);
             fields.needs_retraining = true;
           }
         }
         await updateDoc(doc(db, "employees", emp.id), fields);
       } else {
-        if (cropB64) {
-          const existing = (await getDoc(doc(db, "employees", mergeTarget.id))).data()?.training_photos || [];
-          if (existing.length < TRAINING_TARGET) {
-            await updateDoc(doc(db, "employees", mergeTarget.id), {
-              training_photos:  arrayUnion(cropB64),
-              needs_retraining: true,
-            });
-          }
+        const targetSnap = await getDoc(doc(db, "employees", mergeTarget.id));
+        const existing = targetSnap.data()?.training_photos || [];
+        const mergeFields = {
+          needs_retraining: true,
+          needs_capture: true,
+          capture_ready: false,
+          capture_frames: [],
+        };
+        if (photoToAdd && existing.length < TRAINING_TARGET) {
+          mergeFields.training_photos = arrayUnion(photoToAdd);
         }
+        await updateDoc(doc(db, "employees", mergeTarget.id), mergeFields);
+
         const attSnap = await getDocs(
           query(collection(db, "attendance"), where("emp_id", "==", emp.id))
         );
