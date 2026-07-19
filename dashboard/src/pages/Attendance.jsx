@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
 import {
   collection, query, where, getDocs,
-  deleteDoc, doc,
+  deleteDoc, doc, updateDoc, arrayUnion, writeBatch, getDoc,
 } from "firebase/firestore";
 import { db } from "../firebase";
+import FrameCropModal from "../components/FrameCropModal";
 
 export default function Attendance() {
   const [records,      setRecords]      = useState([]);
   const [employees,    setEmployees]    = useState({});
+  const [convertModal, setConvertModal] = useState(null); // emp object for unknown
   const [selectedDate, setSelectedDate] = useState(today());
   const [loading,      setLoading]      = useState(true);
   const [selected,     setSelected]     = useState(new Set()); // record IDs chosen for bulk delete
@@ -26,7 +28,7 @@ export default function Attendance() {
   async function loadEmployees() {
     const snap = await getDocs(collection(db, "employees"));
     const map = {};
-    snap.forEach((d) => { map[d.id] = d.data(); });
+    snap.forEach((d) => { map[d.id] = { id: d.id, ...d.data() }; });
     setEmployees(map);
   }
 
@@ -206,6 +208,16 @@ export default function Attendance() {
                         <span className={`badge ${isUnknown ? "unknown" : "present"}`}>
                           {isUnknown ? "Unknown" : "Present"}
                         </span>
+                        {isUnknown && emp.id && (
+                          <button
+                            className="btn btn-sm btn-outline"
+                            style={{ marginLeft: 8, color: "#2563eb", borderColor: "#bfdbfe" }}
+                            onClick={() => setConvertModal(emp)}
+                            title="Identify this person"
+                          >
+                            Identify →
+                          </button>
+                        )}
                       </td>
                       <td>{fmt(r.in_time)}</td>
                       <td>{fmt(r.out_time)}</td>
@@ -227,6 +239,186 @@ export default function Attendance() {
             </table>
           </div>
         )}
+      </div>
+
+      {convertModal && (
+        <QuickConvertModal
+          emp={convertModal}
+          allEmployees={Object.values(employees).filter((e) => !e.is_unknown)}
+          onClose={() => { setConvertModal(null); loadEmployees(); loadAttendance(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function QuickConvertModal({ emp, allEmployees, onClose }) {
+  const TRAINING_TARGET = 10;
+  const [mode,        setMode]        = useState("new");   // "new" | "merge"
+  const [name,        setName]        = useState("");
+  const [dept,        setDept]        = useState("");
+  const [search,      setSearch]      = useState("");
+  const [mergeTarget, setMergeTarget] = useState(null);
+  const [cropB64,     setCropB64]     = useState(null);
+  const [showCrop,    setShowCrop]    = useState(false);
+  const [saving,      setSaving]      = useState(false);
+  const [error,       setError]       = useState("");
+
+  const detectionFrame = emp.detection_frame || null;
+  const filtered = allEmployees.filter((e) =>
+    e.name?.toLowerCase().includes(search.toLowerCase())
+  );
+
+  async function handleSave() {
+    setError("");
+    if (mode === "new" && !name.trim()) { setError("Name is required."); return; }
+    if (mode === "merge" && !mergeTarget) { setError("Select an employee to merge into."); return; }
+    setSaving(true);
+    try {
+      if (mode === "new") {
+        const fields = { name: name.trim(), department: dept.trim(), is_unknown: false };
+        if (cropB64) {
+          const existing = (await getDoc(doc(db, "employees", emp.id))).data()?.training_photos || [];
+          if (existing.length < TRAINING_TARGET) {
+            fields.training_photos  = arrayUnion(cropB64);
+            fields.needs_retraining = true;
+          }
+        }
+        await updateDoc(doc(db, "employees", emp.id), fields);
+      } else {
+        if (cropB64) {
+          const existing = (await getDoc(doc(db, "employees", mergeTarget.id))).data()?.training_photos || [];
+          if (existing.length < TRAINING_TARGET) {
+            await updateDoc(doc(db, "employees", mergeTarget.id), {
+              training_photos:  arrayUnion(cropB64),
+              needs_retraining: true,
+            });
+          }
+        }
+        const attSnap = await getDocs(
+          query(collection(db, "attendance"), where("emp_id", "==", emp.id))
+        );
+        const batch = writeBatch(db);
+        attSnap.docs.forEach((d) => batch.update(d.ref, { emp_id: mergeTarget.id }));
+        await batch.commit();
+        await deleteDoc(doc(db, "employees", emp.id));
+      }
+      onClose();
+    } catch (e) {
+      setError("Save failed: " + e.message);
+      setSaving(false);
+    }
+  }
+
+  if (showCrop && detectionFrame) {
+    return (
+      <FrameCropModal
+        index={0}
+        b64={detectionFrame}
+        onConfirm={(_, b64) => { setCropB64(b64); setShowCrop(false); }}
+        onCancel={() => setShowCrop(false)}
+      />
+    );
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 480 }}>
+        <h2 style={{ marginBottom: 4 }}>Identify Unknown Person</h2>
+        <p className="hint" style={{ marginBottom: 16 }}>
+          Current ID: <strong>{emp.id}</strong>
+        </p>
+
+        {detectionFrame && (
+          <div style={{ marginBottom: 16, textAlign: "center" }}>
+            <div style={{ position: "relative", display: "inline-block" }}>
+              <img
+                src={`data:image/jpeg;base64,${cropB64 || detectionFrame}`}
+                alt="detection"
+                style={{ maxWidth: "100%", maxHeight: 200, borderRadius: 8, border: "1px solid #e2e8f0" }}
+              />
+              {cropB64 && (
+                <span style={{ position: "absolute", top: 4, right: 4, background: "#16a34a",
+                  color: "#fff", fontSize: 11, padding: "2px 6px", borderRadius: 4 }}>
+                  ✓ cropped
+                </span>
+              )}
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <button className="btn btn-sm btn-outline" onClick={() => setShowCrop(true)}>
+                ✂ {cropB64 ? "Re-crop" : "Crop person"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+          <button
+            className={`btn btn-sm ${mode === "new" ? "btn-primary" : "btn-outline"}`}
+            onClick={() => setMode("new")}
+          >
+            New Employee
+          </button>
+          <button
+            className={`btn btn-sm ${mode === "merge" ? "btn-primary" : "btn-outline"}`}
+            onClick={() => setMode("merge")}
+          >
+            Merge into Existing
+          </button>
+        </div>
+
+        {mode === "new" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <div className="field">
+              <label htmlFor="qc-name">Full Name *</label>
+              <input id="qc-name" className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Ramesh Kumar" />
+            </div>
+            <div className="field">
+              <label htmlFor="qc-dept">Department</label>
+              <input id="qc-dept" className="input" value={dept} onChange={(e) => setDept(e.target.value)} placeholder="e.g. Shop" />
+            </div>
+          </div>
+        )}
+
+        {mode === "merge" && (
+          <div>
+            <div className="field" style={{ marginBottom: 8 }}>
+              <label htmlFor="qc-search">Search employee</label>
+              <input id="qc-search" className="input" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Type name…" />
+            </div>
+            <div style={{ maxHeight: 180, overflowY: "auto", border: "1px solid #e2e8f0", borderRadius: 8 }}>
+              {filtered.length === 0
+                ? <div className="empty" style={{ padding: "12px 16px" }}>No employees found</div>
+                : filtered.map((e) => (
+                  <div
+                    key={e.id}
+                    onClick={() => setMergeTarget(e)}
+                    style={{
+                      padding: "10px 16px", cursor: "pointer", fontSize: 14,
+                      background: mergeTarget?.id === e.id ? "#eff6ff" : undefined,
+                      borderBottom: "1px solid #f1f5f9",
+                    }}
+                  >
+                    <strong>{e.name}</strong>
+                    {e.department && <span style={{ color: "#64748b", marginLeft: 8 }}>{e.department}</span>}
+                    {mergeTarget?.id === e.id && <span style={{ float: "right", color: "#2563eb" }}>✓</span>}
+                  </div>
+                ))
+              }
+            </div>
+          </div>
+        )}
+
+        {error && (
+          <div style={{ marginTop: 12, color: "#dc2626", fontSize: 13 }}>{error}</div>
+        )}
+
+        <div className="modal-actions">
+          <button className="btn btn-outline" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+            {saving ? "Saving…" : mode === "merge" ? "Merge" : "Create Employee"}
+          </button>
+        </div>
       </div>
     </div>
   );
