@@ -40,21 +40,26 @@ def get_unknown_count():
 
 
 def create_unknown_employee(img_path, appearance=None, detection_frame_b64=None):
-    count = get_unknown_count() + 1
-    emp_id = f"Unknown{str(count).zfill(3)}"
-    snapshot_url = upload_snapshot(emp_id, img_path)
+    # Use a total-ever count so the display name never collides with an existing document.
+    # get_unknown_count() only counts current unknowns, so when an unknown is converted
+    # the count drops and the next unknown would reuse the same ID — overwriting the
+    # converted employee. Using add() lets Firestore generate a unique document ID.
+    count = _db().collection("employees").stream()
+    total = sum(1 for _ in count) + 1          # total employees ever, always increases
+    display_name = f"Unknown{str(total).zfill(3)}"
+    snapshot_url = upload_snapshot(display_name, img_path)
     doc = {
-        "name": emp_id,
+        "name": display_name,
         "department": "",
         "face_encoding": [],
         "body_appearance": appearance.tolist() if appearance is not None else [],
         "face_snapshot_url": snapshot_url,
-        "detection_frame": detection_frame_b64 or "",   # annotated scene image
+        "detection_frame": detection_frame_b64 or "",
         "is_unknown": True,
         "created_at": firestore.SERVER_TIMESTAMP,
     }
-    _db().collection("employees").document(emp_id).set(doc)
-    return emp_id, snapshot_url
+    _, ref = _db().collection("employees").add(doc)   # auto-generates unique document ID
+    return ref.id, snapshot_url
 
 
 def update_employee_encoding(emp_id, encoding: np.ndarray):
