@@ -15,22 +15,43 @@ def _db():
 
 
 def load_all_employees():
-    """Load all employees that have at least a face encoding OR body appearance."""
+    """Load all employees into the backend cache.
+
+    Known employees (is_unknown=False) are always included even if they have
+    no face encoding yet — this prevents the backend from treating a recently
+    converted employee as a brand-new unknown and overwriting their record.
+    Unknown employees are only included when they have at least one embedding
+    so they can participate in re-matching.
+    """
     employees = {}
     docs = _db().collection("employees").stream()
     for doc in docs:
         data = doc.to_dict()
+        if data.get("deleted"):
+            continue
         has_face       = bool(data.get("face_encoding"))
         has_appearance = bool(data.get("body_appearance"))
-        if not (has_face or has_appearance):
-            continue
-        employees[doc.id] = {
-            "name":       data.get("name", doc.id),
-            "encoding":   np.array(data["face_encoding"])   if has_face       else np.array([]),
-            "appearance": np.array(data["body_appearance"]) if has_appearance else np.array([]),
-            "is_unknown": data.get("is_unknown", False),
-            "is_ignored": data.get("is_ignored", False),
-        }
+        is_unknown     = data.get("is_unknown", False)
+        is_ignored     = data.get("is_ignored", False)
+
+        # Always load known employees so the backend doesn't re-create them as unknowns
+        if not is_unknown:
+            employees[doc.id] = {
+                "name":       data.get("name", doc.id),
+                "encoding":   np.array(data["face_encoding"])   if has_face       else np.array([]),
+                "appearance": np.array(data["body_appearance"]) if has_appearance else np.array([]),
+                "is_unknown": False,
+                "is_ignored": is_ignored,
+            }
+        elif has_face or has_appearance:
+            # Unknown employees only loaded when they have embeddings for re-matching
+            employees[doc.id] = {
+                "name":       data.get("name", doc.id),
+                "encoding":   np.array(data["face_encoding"])   if has_face       else np.array([]),
+                "appearance": np.array(data["body_appearance"]) if has_appearance else np.array([]),
+                "is_unknown": True,
+                "is_ignored": is_ignored,
+            }
     return employees
 
 
