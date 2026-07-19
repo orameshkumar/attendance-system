@@ -414,7 +414,31 @@ function QuickConvertModal({ emp, allEmployees, onClose }) {
         )}
 
         <div className="modal-actions">
-          <button className="btn btn-outline" onClick={onClose}>Cancel</button>
+          <button
+            className="btn btn-outline"
+            style={{ color: "#64748b", borderColor: "#cbd5e1", marginRight: "auto" }}
+            disabled={saving}
+            onClick={async () => {
+              if (!window.confirm("Ignore this unknown? It will be hidden from the employee list and removed from attendance.")) return;
+              setSaving(true);
+              try {
+                await updateDoc(doc(db, "employees", emp.id), { is_ignored: true });
+                const attSnap = await getDocs(
+                  query(collection(db, "attendance"), where("emp_id", "==", emp.id))
+                );
+                const batch = writeBatch(db);
+                attSnap.docs.forEach((d) => batch.delete(d.ref));
+                await batch.commit();
+                onClose();
+              } catch (e) {
+                setError("Failed: " + e.message);
+                setSaving(false);
+              }
+            }}
+          >
+            Ignore
+          </button>
+          <button className="btn btn-outline" onClick={onClose} disabled={saving}>Cancel</button>
           <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
             {saving ? "Saving…" : mode === "merge" ? "Merge" : "Create Employee"}
           </button>
