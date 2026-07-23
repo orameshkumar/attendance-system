@@ -256,30 +256,45 @@ def get_embedding(face_img):
         return None
 
 
-# ── Body appearance (top-angle fallback) ──────────────────────────────────────
+# ── Body shape appearance (HOG-based, top-angle robust) ───────────────────────
+
+# Standard HOG descriptor for a 64×128 window — 3780-dimensional, L2-normalised.
+# HOG captures body silhouette / pose rather than clothing colour, so it is
+# robust to the person wearing different outfits on different days.
+_HOG = cv2.HOGDescriptor(
+    _winSize=(64, 128),
+    _blockSize=(16, 16),
+    _blockStride=(8, 8),
+    _cellSize=(8, 8),
+    _nbins=9,
+)
+
 
 def get_body_appearance(person_crop):
     """
-    Build a compact HSV color histogram from the upper 60% of the person crop
+    Compute a HOG body-shape descriptor from the upper 70% of the person crop
     (head + torso region visible from top/overhead cameras).
 
-    Returns a 1-D float32 numpy array (288 bins = 18 hue × 16 sat).
+    Returns a 1-D float32 numpy array (3780 dims), L2-normalised.
+    HOG captures body silhouette/pose — unaffected by clothing colour changes.
     """
     h = person_crop.shape[0]
-    upper = person_crop[: max(1, int(h * 0.6))]
+    upper = person_crop[: max(1, int(h * 0.7))]
     if upper.size == 0:
         return None
     try:
-        hsv = cv2.cvtColor(upper, cv2.COLOR_BGR2HSV)
-        hist = cv2.calcHist([hsv], [0, 1], None, [18, 16], [0, 180, 0, 256])
-        cv2.normalize(hist, hist, norm_type=cv2.NORM_L2)
-        return hist.flatten().astype(np.float32)
+        resized = cv2.resize(upper, (64, 128))
+        gray    = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+        desc    = _HOG.compute(gray)          # (3780, 1) float32
+        desc    = desc.flatten()
+        norm    = np.linalg.norm(desc)
+        return (desc / norm).astype(np.float32) if norm > 0 else desc.astype(np.float32)
     except Exception:
         return None
 
 
 def appearance_similarity(a, b):
-    """Cosine similarity between two appearance histograms."""
+    """Cosine similarity between two HOG body-shape descriptors."""
     na, nb = np.linalg.norm(a), np.linalg.norm(b)
     if na == 0 or nb == 0:
         return 0.0

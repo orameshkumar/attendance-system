@@ -175,6 +175,13 @@ def record_attendance(emp_id, snapshot_url):
         return "updated"
 
 
+def update_unknown_top_matches(emp_id: str, top_matches: list):
+    """Refresh the top_matches field on an unknown employee record."""
+    _db().collection("employees").document(emp_id).update({
+        "top_matches": top_matches
+    })
+
+
 def get_employees_needing_capture():
     """Return list of (doc_id, data) for employees awaiting frame capture."""
     docs = _db().collection("employees").where("needs_capture", "==", True).stream()

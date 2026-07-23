@@ -126,6 +126,8 @@ def run_retraining():
     pending = fs.get_employees_needing_retraining()
     if not pending:
         return
+
+    retrained_any = False
     for emp_id, data in pending:
         photos = data.get("training_photos", [])
         if not photos:
@@ -147,13 +149,44 @@ def run_retraining():
         avg_appearance = fe.average_embeddings(appear_features) if appear_features else None
 
         fs.save_retrained_encoding(emp_id, avg_face, avg_appearance)
+        retrained_any = True
 
         name = data.get("name", emp_id)
         face_str   = f"{faces_found}/{len(photos)} faces extracted" if faces_found else "no face visible (top-angle only)"
-        appear_str = f"{len(appear_features)} appearance features"
+        appear_str = f"{len(appear_features)} HOG shape features"
         print(f"[RETRAIN] {name} ({emp_id}) — {face_str}, {appear_str} → saved.")
 
-    refresh_employees()
+    if retrained_any:
+        # Reload cache so unknowns are scored against the fresh encodings
+        refresh_employees()
+        _rematch_open_unknowns()
+
+
+def _rematch_open_unknowns():
+    """
+    After retraining, rescore every open unknown against the updated employee
+    cache and write fresh top_matches back to Firestore. This means the
+    '% Match' button in the dashboard immediately reflects the new training.
+    """
+    updated = 0
+    for emp_id, data in employees.items():
+        if not data.get("is_unknown") or data.get("is_ignored"):
+            continue
+        face_emb   = data.get("encoding")
+        appearance = data.get("appearance")
+        face_emb   = face_emb   if face_emb   is not None and len(face_emb)   > 0 else None
+        appearance = appearance if appearance  is not None and len(appearance) > 0 else None
+        if face_emb is None and appearance is None:
+            continue
+        top_matches = fe.find_top_matches(face_emb, appearance, employees)
+        if top_matches:
+            try:
+                fs.update_unknown_top_matches(emp_id, top_matches)
+                updated += 1
+            except Exception as e:
+                print(f"[WARN] Could not update top_matches for {emp_id}: {e}")
+    if updated:
+        print(f"[REMATCH] Updated top_matches for {updated} unknown employee(s).")
 
 
 def _annotated_frame_b64(frame, bbox, label="Motion detected"):
