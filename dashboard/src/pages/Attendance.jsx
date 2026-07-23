@@ -10,6 +10,7 @@ export default function Attendance() {
   const [records,      setRecords]      = useState([]);
   const [employees,    setEmployees]    = useState({});
   const [convertModal, setConvertModal] = useState(null); // emp object for unknown
+  const [matchModal,   setMatchModal]   = useState(null); // emp object for top-matches view
   const [selectedDate, setSelectedDate] = useState(today());
   const [loading,      setLoading]      = useState(true);
   const [selected,     setSelected]     = useState(new Set()); // record IDs chosen for bulk delete
@@ -209,14 +210,24 @@ export default function Attendance() {
                           {isUnknown ? "Unknown" : "Present"}
                         </span>
                         {isUnknown && emp.id && (
-                          <button
-                            className="btn btn-sm btn-outline"
-                            style={{ marginLeft: 8, color: "#2563eb", borderColor: "#bfdbfe" }}
-                            onClick={() => setConvertModal(emp)}
-                            title="Identify this person"
-                          >
-                            Identify →
-                          </button>
+                          <>
+                            <button
+                              className="btn btn-sm btn-outline"
+                              style={{ marginLeft: 8, color: "#7c3aed", borderColor: "#ddd6fe" }}
+                              onClick={() => setMatchModal(emp)}
+                              title="Show top matching employees"
+                            >
+                              % Match
+                            </button>
+                            <button
+                              className="btn btn-sm btn-outline"
+                              style={{ marginLeft: 6, color: "#2563eb", borderColor: "#bfdbfe" }}
+                              onClick={() => setConvertModal(emp)}
+                              title="Identify this person"
+                            >
+                              Identify →
+                            </button>
+                          </>
                         )}
                       </td>
                       <td>{fmt(r.in_time)}</td>
@@ -241,13 +252,149 @@ export default function Attendance() {
         )}
       </div>
 
+      {matchModal && (
+        <TopMatchesModal
+          emp={matchModal}
+          allEmployees={employees}
+          onClose={() => setMatchModal(null)}
+          onIdentify={(emp) => { setMatchModal(null); setConvertModal(emp); }}
+        />
+      )}
+
       {convertModal && (
         <QuickConvertModal
           emp={convertModal}
-          allEmployees={Object.values(employees).filter((e) => !e.is_unknown)}
+          allEmployees={Object.values(employees).filter((e) => !e.is_unknown && !e.deleted)}
           onClose={() => { setConvertModal(null); loadEmployees(); loadAttendance(); }}
         />
       )}
+    </div>
+  );
+}
+
+function TopMatchesModal({ emp, allEmployees, onClose, onIdentify }) {
+  const matches = emp.top_matches || [];
+  const hasMatches = matches.length > 0;
+
+  function scoreColor(score) {
+    if (score >= 75) return "#16a34a";
+    if (score >= 50) return "#d97706";
+    return "#dc2626";
+  }
+
+  function scoreLabel(score) {
+    if (score >= 75) return "Strong";
+    if (score >= 50) return "Moderate";
+    return "Weak";
+  }
+
+  return (
+    <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 480 }}>
+        <h2 style={{ marginBottom: 4 }}>Top Matching Employees</h2>
+        <p className="hint" style={{ marginBottom: 16 }}>
+          Best candidates for <strong>{emp.name || emp.id}</strong> based on face &amp; appearance similarity.
+        </p>
+
+        {emp.detection_frame && (
+          <div style={{ textAlign: "center", marginBottom: 16 }}>
+            <img
+              src={`data:image/jpeg;base64,${emp.detection_frame}`}
+              alt="detection"
+              style={{ maxWidth: "100%", maxHeight: 160, borderRadius: 8, border: "1px solid #e2e8f0" }}
+            />
+          </div>
+        )}
+
+        {!hasMatches ? (
+          <div style={{ padding: "24px 0", textAlign: "center", color: "#94a3b8" }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>🔍</div>
+            <p style={{ margin: 0 }}>No match data available.</p>
+            <p className="hint" style={{ marginTop: 4 }}>
+              This record was created before match scoring was added, or no known employees have been trained yet.
+            </p>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
+            {matches.map((m, i) => {
+              const empData = allEmployees[m.emp_id] || {};
+              const photo = empData.training_photos?.[0] || empData.capture_frames?.[0] || empData.detection_frame || null;
+              return (
+                <div
+                  key={m.emp_id}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 12,
+                    padding: "10px 14px", borderRadius: 10,
+                    border: "1px solid #e2e8f0", background: i === 0 ? "#faf5ff" : "#f8fafc",
+                  }}
+                >
+                  {/* Rank badge */}
+                  <div style={{
+                    width: 24, height: 24, borderRadius: "50%", flexShrink: 0,
+                    background: i === 0 ? "#7c3aed" : "#e2e8f0",
+                    color: i === 0 ? "#fff" : "#64748b",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 12, fontWeight: 700,
+                  }}>
+                    {i + 1}
+                  </div>
+
+                  {/* Avatar */}
+                  {photo
+                    ? <img src={`data:image/jpeg;base64,${photo}`} alt=""
+                        style={{ width: 40, height: 40, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }} />
+                    : <div style={{ width: 40, height: 40, borderRadius: "50%", background: "#e2e8f0", flexShrink: 0 }} />
+                  }
+
+                  {/* Name + score bar */}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+                      <span style={{ fontWeight: 600, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {m.name}
+                      </span>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: scoreColor(m.score), marginLeft: 8, flexShrink: 0 }}>
+                        {m.score}%
+                      </span>
+                    </div>
+                    <div style={{ height: 6, background: "#e2e8f0", borderRadius: 4, overflow: "hidden" }}>
+                      <div style={{
+                        height: "100%", width: `${m.score}%`,
+                        background: scoreColor(m.score), borderRadius: 4,
+                        transition: "width 0.4s ease",
+                      }} />
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 3 }}>
+                      <span style={{ fontSize: 11, color: "#94a3b8" }}>via {m.method}</span>
+                      <span style={{ fontSize: 11, color: scoreColor(m.score) }}>{scoreLabel(m.score)}</span>
+                    </div>
+                  </div>
+
+                  {/* Quick merge button */}
+                  <button
+                    className="btn btn-sm btn-outline"
+                    style={{ color: "#7c3aed", borderColor: "#ddd6fe", flexShrink: 0 }}
+                    onClick={() => onIdentify(emp)}
+                    title={`Identify as ${m.name}`}
+                  >
+                    Use
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="modal-actions">
+          <button className="btn btn-outline" onClick={onClose}>Close</button>
+          <button
+            className="btn btn-primary"
+            style={{ background: "#7c3aed", borderColor: "#7c3aed" }}
+            onClick={() => onIdentify(emp)}
+          >
+            Identify →
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

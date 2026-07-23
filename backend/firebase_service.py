@@ -60,7 +60,7 @@ def get_unknown_count():
     return sum(1 for _ in docs)
 
 
-def create_unknown_employee(img_path, appearance=None, detection_frame_b64=None):
+def create_unknown_employee(img_path, appearance=None, detection_frame_b64=None, top_matches=None):
     # Use a total-ever count so the display name never collides with an existing document.
     # get_unknown_count() only counts current unknowns, so when an unknown is converted
     # the count drops and the next unknown would reuse the same ID — overwriting the
@@ -78,6 +78,7 @@ def create_unknown_employee(img_path, appearance=None, detection_frame_b64=None)
         "detection_frame": detection_frame_b64 or "",
         "is_unknown": True,
         "created_at": firestore.SERVER_TIMESTAMP,
+        "top_matches": top_matches or [],
     }
     _, ref = _db().collection("employees").add(doc)   # auto-generates unique document ID
     return ref.id, snapshot_url

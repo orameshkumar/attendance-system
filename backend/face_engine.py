@@ -438,6 +438,43 @@ def find_best_unknown_match(face_emb, appearance, employees: dict, min_score=0.6
     return None, best_score, best_method
 
 
+def find_top_matches(face_emb, appearance, employees: dict, top_n=5):
+    """
+    Score this detection against every known (non-unknown, non-ignored) employee
+    and return the top_n results sorted by descending score.
+    Used to populate top_matches on a new unknown record so the dashboard
+    can show 'best guess' candidates without needing a separate API call.
+    Returns a list of dicts: {emp_id, name, score (0-100), method}.
+    """
+    scores = []
+    for emp_id, data in employees.items():
+        if data.get("is_unknown") or data.get("is_ignored"):
+            continue
+        best_score  = 0.0
+        best_method = "none"
+
+        if face_emb is not None and len(data.get("encoding", [])) > 0:
+            s = cosine_similarity(face_emb, data["encoding"])
+            if s > best_score:
+                best_score, best_method = s, "face"
+
+        if appearance is not None and len(data.get("appearance", [])) > 0:
+            s = appearance_similarity(appearance, data["appearance"])
+            if s > best_score:
+                best_score, best_method = s, "appearance"
+
+        if best_score > 0:
+            scores.append({
+                "emp_id": emp_id,
+                "name":   data.get("name", emp_id),
+                "score":  round(best_score * 100, 1),
+                "method": best_method,
+            })
+
+    scores.sort(key=lambda x: x["score"], reverse=True)
+    return scores[:top_n]
+
+
 # ── Training utilities ────────────────────────────────────────────────────────
 
 def decode_b64_image(b64_str: str):

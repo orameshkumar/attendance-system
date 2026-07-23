@@ -254,10 +254,11 @@ def _process_candidate(person_crop, bbox, source, now, frame=None):
         last_seen[pos_key] = now
 
         det_frame_b64 = _annotated_frame_b64(frame, bbox, f"Detected [{source}]") if frame is not None else None
+        top_matches   = fe.find_top_matches(face_emb, appearance, employees)
 
-        print(f"[RECORD]  creating unknown employee…")
+        print(f"[RECORD]  creating unknown employee… top matches: {[m['name'] + ' ' + str(m['score']) + '%' for m in top_matches]}")
         temp_path = fe.save_face_temp(person_crop, "unknown")
-        new_id, snapshot_url = fs.create_unknown_employee(temp_path, appearance, det_frame_b64)
+        new_id, snapshot_url = fs.create_unknown_employee(temp_path, appearance, det_frame_b64, top_matches)
         print(f"[RECORD]  created {new_id}, recording attendance…")
 
         if face_emb is not None:
